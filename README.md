@@ -6,6 +6,16 @@ confirmation — and **never holds a wallet key**.
 
 Signing belongs to [longstone](../longstone); hisaishi only prepares.
 
+## Install
+
+```bash
+npm install @limccn/hisaishi-gateway
+```
+
+Published to npmjs and GitHub Packages as `0.1.0`. The root export is the
+keyless contract (`createGatewayHandle`, route types); `/local` is the Node +
+`node:sqlite` form; `/worker` is the Cloudflare Workers entry.
+
 ## Two forms, one contract
 
 | Form | Runtime | Status |
