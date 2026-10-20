@@ -45,7 +45,9 @@ export async function createGateway(opts: LocalGatewayOptions): Promise<OpenGate
   const docStore = opts.docStore ?? new SqliteDocStore(db);
   const contentCache = opts.contentCache ?? new SqliteContentCache(db);
   const rpc = opts.rpc ?? (await import('./rpc.js')).createReceiptRpc(opts.rpcUrl);
-  const pin = opts.pin ?? (await import('./pin.js')).createPin(opts.pinataJwt);
+  // One pin implementation for both forms (core/ports/pin.ts). A second copy
+  // in local/ would be a second place for the Pinata call to drift.
+  const pin = opts.pin ?? (await import('../core/ports/pin.js')).createMemoryPin(opts.pinataJwt);
 
   const client = createHisaishiClient({
     ipfsGateway: opts.ipfsGateway,
