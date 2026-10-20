@@ -7,6 +7,8 @@
  * `CONTENT_NOT_FOUND` (404) and everything else to `GATEWAY_UPSTREAM` (502).
  */
 
+import { buildGatewayUrl, classifyGatewayResponse } from '../core/gateway-url.js';
+
 export interface HisaishiClientOptions {
   ipfsGateway: string;
   timeoutMs?: number;
@@ -22,14 +24,16 @@ class ContentNotFoundError extends Error {
 }
 
 export function createHisaishiClient(opts: HisaishiClientOptions): HisaishiClient {
-  const base = opts.ipfsGateway.replace(/\/+$/, '');
   const timeoutMs = opts.timeoutMs ?? 10_000;
 
   async function fetchOnce(cid: string): Promise<Response> {
+    // Gateway path is `/ipfs/<cid>`: a bare `/<cid>` returns 400 from Pinata's
+    // dedicated gateways (found by running with a real gateway).
+    const url = buildGatewayUrl(opts.ipfsGateway, cid);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      return await fetch(`${base}/${encodeURIComponent(cid)}`, { signal: controller.signal });
+      return await fetch(url, { signal: controller.signal });
     } finally {
       clearTimeout(timer);
     }
@@ -37,14 +41,15 @@ export function createHisaishiClient(opts: HisaishiClientOptions): HisaishiClien
 
   return {
     async fetchContent(cid: string): Promise<Uint8Array> {
-      if (!/^[a-zA-Z0-9]+$/.test(cid)) {
-        throw new Error(`invalid cid: ${cid}`);
-      }
       const response = await fetchOnce(cid);
-      if (response.status === 404) {
+      const outcome = await classifyGatewayResponse(response);
+      if (outcome === 'notFound') {
         throw new ContentNotFoundError(`gateway reports ${cid} missing`);
       }
-      if (!response.ok) {
+      if (outcome === 'invalidCid') {
+        throw Object.assign(new Error(`gateway rejected cid: ${cid}`), { invalidCid: true });
+      }
+      if (outcome === 'upstream') {
         throw new Error(`gateway returned ${response.status} for ${cid}`);
       }
       return new Uint8Array(await response.arrayBuffer());

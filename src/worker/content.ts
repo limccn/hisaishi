@@ -6,33 +6,35 @@
  * failure.
  */
 
+import { buildGatewayUrl, classifyGatewayResponse } from '../core/gateway-url.js';
+
 export function createGatewayContentFetch(
   ipfsGateway: string,
   timeoutMs = 10_000,
 ): (cid: string) => Promise<Uint8Array> {
-  const base = ipfsGateway.replace(/\/+$/, '');
-
   return async (cid: string): Promise<Uint8Array> => {
-    if (!/^[a-zA-Z0-9]+$/.test(cid)) {
-      throw new Error(`invalid cid: ${cid}`);
-    }
-
+    // Same `/ipfs/<cid>` rule as F1; see core/gateway-url.ts for why.
+    const url = buildGatewayUrl(ipfsGateway, cid);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     let response: Response;
     try {
-      response = await fetch(`${base}/${encodeURIComponent(cid)}`, {
+      response = await fetch(url, {
         signal: controller.signal,
       });
     } finally {
       clearTimeout(timer);
     }
 
-    if (response.status === 404) {
-      throw Object.assign(new Error(`gateway reports ${cid} missing`), { notFound: true });
+    const outcome = await classifyGatewayResponse(response);
+    if (outcome === 'notFound') {
+      throw Object.assign(new Error(`gateway reports ${cid} missing at ${url}`), { notFound: true });
     }
-    if (!response.ok) {
-      throw new Error(`gateway returned ${response.status} for ${cid}`);
+    if (outcome === 'invalidCid') {
+      throw Object.assign(new Error(`gateway rejected cid: ${cid}`), { invalidCid: true });
+    }
+    if (outcome === 'upstream') {
+      throw new Error(`gateway returned ${response.status} for ${url}`);
     }
     return new Uint8Array(await response.arrayBuffer());
   };

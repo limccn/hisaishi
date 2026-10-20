@@ -37,9 +37,10 @@
     }
   ],
 
-  "vars": {
-    "IPFS_GATEWAY": ""
-  },
+  // No `vars` entry for IPFS_GATEWAY: Cloudflare rejects a plain var and a
+  // secret sharing a name ("Binding name already in use", code 10053), and the
+  // gateway URL belongs in a secret because it changes per deployment. RPC_URL
+  // and PINATA_JWT are secrets for the same reason.
 
   "observability": {
     "enabled": true

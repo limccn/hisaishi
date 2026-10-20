@@ -248,9 +248,13 @@ export async function content(ports: Ports, cid: string): Promise<Uint8Array> {
   try {
     bytes = await ports.fetchContent(cid);
   } catch (error) {
-    const notFound = (error as { notFound?: boolean } | null)?.notFound === true;
+    const flags = error as { notFound?: boolean; invalidCid?: boolean } | null;
+    // Three distinct facts, three distinct codes: absent vs malformed vs down.
+    if (flags?.invalidCid === true) {
+      throw new GatewayError('INVALID_HASH', (error as Error).message);
+    }
     throw new GatewayError(
-      notFound ? 'CONTENT_NOT_FOUND' : 'GATEWAY_UPSTREAM',
+      flags?.notFound === true ? 'CONTENT_NOT_FOUND' : 'GATEWAY_UPSTREAM',
       (error as Error).message,
     );
   }
