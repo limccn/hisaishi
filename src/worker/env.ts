@@ -12,8 +12,11 @@ export interface Bindings {
   DB: D1Like;
   /** dedup:{owner}:{contentHash} → cid, plus content:{cid} bytes. */
   KV_HISAISHI_STAGING: KVLike;
-  /** Reserved for M2 embedding sync. Declared, never written in M1. */
-  KV_EMB: KVLike;
+  /**
+   * Reserved for M2 embedding sync. Optional and unbound in M1: nothing reads
+   * or writes it yet, and binding an unused namespace is cost without purpose.
+   */
+  KV_EMB?: KVLike | undefined;
   RPC_URL: string;
   IPFS_GATEWAY: string;
   PINATA_JWT: string | undefined;

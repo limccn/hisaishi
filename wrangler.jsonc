@@ -15,21 +15,25 @@
 
   "d1_databases": [
     {
+      // Bound as `DB` because that is the name the Worker reads (`env.DB`).
+      // `wrangler d1 create` suggests a binding derived from the database name
+      // (`hisaishi_staging`); the binding is ours to choose, and `DB` matches
+      // the design's §2 bindings table.
       "binding": "DB",
       "database_name": "hisaishi-staging",
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "3118e31b-d6d1-4efb-ab1e-79cff67eaf1a",
       "migrations_dir": "migrations"
     }
   ],
 
+  // KV_EMB is reserved for M2 embedding sync: declared in the Bindings type,
+  // never written in M1. It is deliberately NOT bound here — a placeholder id
+  // would fail the deploy, and creating a namespace we never touch is cost
+  // without purpose. Bind it when M2 starts writing.
   "kv_namespaces": [
     {
       "binding": "KV_HISAISHI_STAGING",
-      "id": "00000000000000000000000000000000"
-    },
-    {
-      "binding": "KV_EMB",
-      "id": "00000000000000000000000000000000"
+      "id": "7c50bc375e8d46eaacd9dcfa0f911cf7"
     }
   ],
 
