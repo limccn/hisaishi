@@ -6,14 +6,14 @@
  *
  * Exercises the contract the deployed Worker must satisfy: stage, dedup,
  * build (placeholders + bytes32 tagLists), confirm-pending, and the three
- * content outcomes (pinned / unpinned / malformed). Uses `@menhir/core` to
+ * content outcomes (pinned / unpinned / malformed). Uses `@limccn/menhir-core` to
  * produce the canonical bytes and hashes, so the request body is byte-exact —
  * the shell mangling CJK inline is a real trap this avoids.
  *
  * Exits non-zero on the first mismatch. No credentials required; it never
  * signs or spends gas.
  */
-import { canonicalBytes, cidDigest, contentHash, parseMemoryContent } from '@menhir/core';
+import { canonicalBytes, cidDigest, contentHash, parseMemoryContent } from '@limccn/menhir-core';
 
 const BASE = (process.env.BASE_URL ?? '').replace(/\/+$/, '');
 if (BASE === '') {

@@ -8,7 +8,7 @@
 
 import { parseEventLogs } from 'viem';
 import { createPublicClient, http } from 'viem';
-import { memoryRegistryAbi } from '@menhir/core';
+import { memoryRegistryAbi } from '@limccn/menhir-core';
 
 import type { ReceiptLike, RpcPort } from '../core/contract.js';
 
@@ -29,7 +29,7 @@ export function createReceiptRpc(rpcUrl: string, registryAddress: `0x${string}`)
         (log) => log.address.toLowerCase() === registryAddress.toLowerCase(),
       );
 
-      // Decode through @menhir/core's generated ABI rather than a local event
+      // Decode through @limccn/menhir-core's generated ABI rather than a local event
       // fragment, so a contract event change breaks the import, not the decode.
       const logs = parseEventLogs({
         abi: memoryRegistryAbi,

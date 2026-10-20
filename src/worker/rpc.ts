@@ -2,14 +2,14 @@
  * Receipt RPC for F2.
  *
  * Identical contract to F1: exactly one `eth_getTransactionReceipt`, decoded
- * through `@menhir/core`'s ABI, no `pending` tag, no polling.
+ * through `@limccn/menhir-core`'s ABI, no `pending` tag, no polling.
  *
  * Built on `fetch` rather than viem's client so it runs unchanged under
  * workerd without pulling a Node transport.
  */
 
 import { decodeEventLog } from 'viem';
-import { memoryRegistryAbi } from '@menhir/core';
+import { memoryRegistryAbi } from '@limccn/menhir-core';
 
 import type { ReceiptLike, RpcPort } from '../core/contract.js';
 

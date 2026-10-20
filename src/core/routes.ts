@@ -7,7 +7,7 @@
  * meaningful.
  */
 
-import { commitmentHash, tagToBytes32, ZERO_BYTES32, type Commitment } from '@menhir/core';
+import { commitmentHash, tagToBytes32, ZERO_BYTES32, type Commitment } from '@limccn/menhir-core';
 
 import type {
   BatchPayload,

@@ -18,7 +18,7 @@ import {
   parseMemoryContent,
   tagToBytes32,
   type MemoryContent,
-} from '@menhir/core';
+} from '@limccn/menhir-core';
 
 import { GatewayError, fromCoreError } from './errors.js';
 

@@ -157,7 +157,7 @@ export class MemoryPin implements PinPort {
   async pin(bytes: Uint8Array): Promise<{ cid: string }> {
     this.calls += 1;
     // Imported lazily so this double cannot be mistaken for production pinning.
-    const { cidV1Raw } = await import('@menhir/core');
+    const { cidV1Raw } = await import('@limccn/menhir-core');
     return { cid: cidV1Raw(bytes) };
   }
 }

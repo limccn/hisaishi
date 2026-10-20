@@ -10,7 +10,7 @@
  * are different media, but that is an adapter detail, not a contract.
  */
 
-import type { Commitment } from '@menhir/core';
+import type { Commitment } from '@limccn/menhir-core';
 
 export type Hex = `0x${string}`;
 

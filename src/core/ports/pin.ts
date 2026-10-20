@@ -6,7 +6,7 @@
  * CID shape does not pass by accident on a fake.
  */
 
-import { cidDigest, cidV1RawFromDigest } from '@menhir/core';
+import { cidDigest, cidV1RawFromDigest } from '@limccn/menhir-core';
 
 import type { PinPort } from '../contract.js';
 

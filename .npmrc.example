@@ -1,0 +1,7 @@
+# Copy to .npmrc (gitignored) before publishing.
+#
+# npm registry
+//registry.npmjs.org/:_authToken=${NPM_TOKEN}
+#
+# GitHub Packages (needs write:packages on the token)
+//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}

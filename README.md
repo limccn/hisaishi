@@ -57,7 +57,7 @@ field to put one in.
 ### Embedded
 
 ```ts
-import { createGateway } from '@hisaishi/gateway/local';
+import { createGateway } from '@limccn/hisaishi-gateway/local';
 
 const { handle } = await createGateway({
   dbPath: '.longstone/hisaishi.db',

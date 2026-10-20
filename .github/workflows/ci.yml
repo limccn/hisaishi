@@ -9,7 +9,7 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-# hisaishi imports `@menhir/core` as `workspace:*`, so CI assembles the
+# hisaishi imports `@limccn/menhir-core` as `workspace:*`, so CI assembles the
 # workspace: the sibling menhir repo plus this one.
 jobs:
   verify:
@@ -39,14 +39,14 @@ jobs:
       - run: pnpm install --no-frozen-lockfile
         working-directory: workspace
 
-      - run: pnpm --filter @menhir/core build
+      - run: pnpm --filter @limccn/menhir-core build
         working-directory: workspace
 
       # Includes the D1 + KV parity harness (miniflare) and the workerd smoke,
       # which rebuilds the real wrangler bundle before running.
-      - run: pnpm --filter @hisaishi/gateway build
+      - run: pnpm --filter @limccn/hisaishi-gateway build
         working-directory: workspace
-      - run: pnpm --filter @hisaishi/gateway test
+      - run: pnpm --filter @limccn/hisaishi-gateway test
         working-directory: workspace
-      - run: pnpm --filter @hisaishi/gateway typecheck
+      - run: pnpm --filter @limccn/hisaishi-gateway typecheck
         working-directory: workspace

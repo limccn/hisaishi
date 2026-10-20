@@ -1,7 +1,7 @@
 /**
  * F2 runtime smokes (PRD ACs).
  *
- * - `@menhir/core` must run under workerd, not just Node: the Worker imports it
+ * - `@limccn/menhir-core` must run under workerd, not just Node: the Worker imports it
  *   for every digest, and a Node-only dependency would only fail at deploy.
  * - the bindings type must stay keyless, and a key in the environment must fail
  *   closed before any request is served.
@@ -15,7 +15,7 @@ import { describe, expect, it } from 'vitest';
 import { assertKeylessBindings } from '../src/worker/env.js';
 
 
-describe('@menhir/core under workerd', () => {
+describe('@limccn/menhir-core under workerd', () => {
   it('canonicalizes CJK and computes both digests in the Workers runtime', async () => {
     // Run the REAL wrangler bundle, not a hand-picked entry: bundling is part
     // of what "core runs under workerd" means, and miniflare alone does not

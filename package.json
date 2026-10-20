@@ -1,5 +1,5 @@
 {
-  "name": "@hisaishi/gateway",
+  "name": "@limccn/hisaishi-gateway",
   "version": "0.1.0",
   "private": false,
   "description": "Keyless memory gateway for MemoryOverEth: staging, dedup, pinning and batch construction over SQLite (F1) or Cloudflare D1/KV (F2).",
@@ -61,11 +61,14 @@
     "deploy": "pnpm build && wrangler deploy",
     "test:e2e": "node scripts/e2e-worker.mjs",
     "migrate:remote": "wrangler d1 migrations apply hisaishi-staging --remote",
-    "prepublishOnly": "pnpm build && pnpm test"
+    "prepublishOnly": "pnpm build && pnpm test",
+    "publish:npm": "pnpm publish --access public --no-git-checks --registry https://registry.npmjs.org/",
+    "publish:gh": "pnpm publish --access public --no-git-checks --registry https://npm.pkg.github.com/",
+    "pack:check": "pnpm pack"
   },
   "dependencies": {
     "@hono/node-server": "2.1.5",
-    "@menhir/core": "workspace:*",
+    "@limccn/menhir-core": "workspace:*",
     "hono": "4.13.13",
     "viem": "2.57.7",
     "zod": "4.6.7"

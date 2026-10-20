@@ -11,7 +11,7 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { canonicalString, contentHash, cidDigest, type MemoryContent } from '@menhir/core';
+import { canonicalString, contentHash, cidDigest, type MemoryContent } from '@limccn/menhir-core';
 
 import { createGatewayHandle, type GatewayHandle } from '../src/core/gateway.js';
 import { createMemoryHarness, type Harness } from '../src/core/ports/memory.js';

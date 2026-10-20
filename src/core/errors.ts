@@ -61,7 +61,7 @@ export function errorBody(error: GatewayError): { code: ErrorCode; detail?: stri
 }
 
 /**
- * Map a `@menhir/core` typed error onto the gateway surface.
+ * Map a `@limccn/menhir-core` typed error onto the gateway surface.
  *
  * The core speaks `UNKNOWN_KEY` / `SCHEMA_VIOLATION` / `NON_NORMALIZED_INPUT` /
  * `TAG_TOO_LONG` / `INVALID_HEX`. The gateway has no `UNKNOWN_KEY` code: an
