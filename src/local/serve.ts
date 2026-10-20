@@ -7,6 +7,7 @@
  */
 
 import { Hono } from 'hono';
+import { cors } from 'hono/cors';
 
 import type { GatewayHandle } from '../core/gateway.js';
 
@@ -21,6 +22,28 @@ async function readJson(c: { req: { json: () => Promise<unknown> } }): Promise<u
 
 export function createApp(handle: GatewayHandle): Hono {
   const app = new Hono();
+
+  // The browser UI is served from a different origin (Pages/Vercel) than the
+  // Worker (workers.dev), so every read of `/v1/memories` is cross-origin.
+  // Without this middleware the gateway is functional over curl but invisible
+  // to its only interactive consumer — a gap that unit tests calling
+  // `app.request` cannot see, because they are same-origin by construction.
+  //
+  // Wildcard origin is deliberate: the gateway is keyless and the staging
+  // surface is public read data. No credentials are accepted, so there is no
+  // ambient authority for a hostile origin to borrow.
+  app.use(
+    '*',
+    cors({
+      origin: '*',
+      allowMethods: ['GET', 'POST', 'OPTIONS'],
+      allowHeaders: ['content-type'],
+      // Browsers cannot read a response header unless it is exposed. The verify
+      // view reports which CID the digest resolved to.
+      exposeHeaders: ['x-ipfs-cid'],
+      maxAge: 86400,
+    }),
+  );
 
   app.post('/v1/memories', async (c) => {
     const body = (await readJson(c)) as Record<string, unknown> | undefined;
@@ -88,16 +111,35 @@ export function createApp(handle: GatewayHandle): Hono {
 
   app.get('/v1/content', async (c) => {
     const cid = c.req.query('cid');
-    if (cid === undefined || cid === '') {
-      return c.json({ code: 'SCHEMA_VIOLATION', detail: 'cid is required' }, 400);
+    const cidDigest = c.req.query('cidDigest');
+    if ((cid === undefined || cid === '') && (cidDigest === undefined || cidDigest === '')) {
+      return c.json(
+        { code: 'SCHEMA_VIOLATION', detail: 'cid or cidDigest is required' },
+        400,
+      );
     }
-    const result = await handle.content(cid);
-    if (!result.ok) return c.json(result.error, result.status as never);
     // Copy into a fresh ArrayBuffer: Hono's BodyInit excludes the
     // SharedArrayBuffer-capable `Uint8Array<ArrayBufferLike>` under TS 7.
-    const body = new Uint8Array(result.value.byteLength);
-    body.set(result.value);
-    return c.newResponse(body.buffer, 200, { 'content-type': 'application/octet-stream' });
+    const stream = (bytes: Uint8Array, headers: Record<string, string> = {}) => {
+      const body = new Uint8Array(bytes.byteLength);
+      body.set(bytes);
+      return c.newResponse(body.buffer, 200, {
+        'content-type': 'application/octet-stream',
+        ...headers,
+      });
+    };
+
+    if (cid !== undefined && cid !== '') {
+      const result = await handle.content(cid);
+      if (!result.ok) return c.json(result.error, result.status as never);
+      return stream(result.value);
+    }
+    // A commitment stores only the digest. Pinata's CIDv0 hashes its dag-pb
+    // wrapper, so the CID is NOT derivable from sha256(bytes); the row is the
+    // bridge. The returned CID lets a verifier report what was fetched.
+    const result = await handle.contentByDigest(cidDigest!);
+    if (!result.ok) return c.json(result.error, result.status as never);
+    return stream(result.value.bytes, { 'x-ipfs-cid': result.value.cid });
   });
 
   return app;

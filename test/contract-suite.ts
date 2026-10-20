@@ -411,6 +411,22 @@ export function runContractSuite(
       expect(Object.keys(row)).not.toContain('batchJson');
     });
 
+    it('owner case: an EIP-55 checksummed query finds lowercase rows', async () => {
+      // Live UI regression: wagmi hands the browser the checksummed spelling
+      // (`…2E610…`), while stage stored lowercase. The staging view queried
+      // with the checksummed form and the gateway answered "no rows" for data
+      // it had just written. Address identity is the 20 bytes, not the case.
+      const lower = `0x${'aB'.repeat(20)}` as `0x${string}`;
+      const checksummed = `0x${'Ab'.repeat(20)}` as `0x${string}`;
+      await stageOk({ text: 'checksummed-owner', owner: lower });
+
+      const listed = await handle.list({ owner: checksummed });
+      expect(listed.ok).toBe(true);
+      if (!listed.ok) return;
+      expect(listed.value).toHaveLength(1);
+      expect(listed.value[0]!.owner).toBe(lower.toLowerCase());
+    });
+
     it('list exposes a derived commitmentHash once batched', async () => {
       await stageOk({ text: 'batched-row' });
       await handle.build({ owner: OWNER });

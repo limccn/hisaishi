@@ -54,6 +54,13 @@ export class MemoryDocStore implements DocStorePort {
     return null;
   }
 
+  async findByCidDigest(cidDigest: string): Promise<MemoryRecord | null> {
+    for (const row of this.rows.values()) {
+      if (row.cidDigest.toLowerCase() === cidDigest.toLowerCase()) return row;
+    }
+    return null;
+  }
+
   async selectStaged(owner: string, limit: number): Promise<MemoryRecord[]> {
     return [...this.rows.values()]
       .filter((r) => r.owner.toLowerCase() === owner.toLowerCase() && r.status === 'staged')

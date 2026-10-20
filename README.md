@@ -29,7 +29,14 @@ miniflare. A behaviour that differs between forms fails that suite.
 | `POST /v1/batches/build` | staged rows → unsigned commitments with **placeholder** `prev/blockHeight/signer`, mark `batched` |
 | `POST /v1/batches/confirm` | **one** receipt call; `status: anchored \| rejected \| pending` |
 | `GET /v1/memories` | staging rows for one owner |
-| `GET /v1/content` | pinned bytes via the dedicated gateway, cache-backed |
+| `GET /v1/content?cid=` | pinned bytes via the dedicated gateway, cache-backed |
+| `GET /v1/content?cidDigest=` | resolves the pinned CID from the staged row and returns its bytes with `x-ipfs-cid`; the bridge a verifier needs when only chain state is known |
+
+All routes answer CORS preflight with `Access-Control-Allow-Origin: *`: the
+browser UI is served from a different origin (Pages/Vercel), and without it the
+Worker is reachable by curl but not by its only interactive consumer. The
+gateway is keyless and accepts no credentials, so the wildcard grants a hostile
+origin no ambient authority.
 
 Error codes and their HTTP status live in one table (`src/core/errors.ts`) so a
 snapshot test pins the mapping rather than each handler's memory of it.
@@ -220,6 +227,13 @@ the suite asserting against the harness's internal store instead of the adapter.
 - The stored CID is whatever the pin backend returns (Pinata returns CIDv0
   `Qm…`), so it will not match a locally computed CIDv1. Integrity never depends
   on it — `cidDigest` is computed from the bytes (D-9).
+- **The pinned CID is not derivable from `cidDigest` for every pin backend.**
+  Pinata's CIDv0 hashes its dag-pb wrapper, not the raw bytes, so `sha256(bytes)`
+  cannot be turned back into the CID. `/v1/content?cidDigest=` exists for that
+  case: the row maps digest → CID. Returning a different content is detectable
+  (callers recompute both digests); withholding is not preventable, and direct
+  CID retrieval remains available. The UI's direct-IPFS fallback (derived raw
+  CIDv1) only works with backends that pin raw blocks.
 - `/v1/memories` has no cursor pagination.
 - F1 concurrency is WAL + one writer per process; stronger guarantees are out
   of scope.
@@ -227,6 +241,11 @@ the suite asserting against the harness's internal store instead of the adapter.
 
 ## Operational notes
 
+- **Owner addresses are canonical lowercase at the route boundary.** An address
+  has one identity but many spellings: wagmi hands the browser the EIP-55
+  checksummed form, while longstone and the chain store lowercase. Comparing the
+  strings literally made the UI's staging query miss rows it had just written;
+  `assertAddress` now normalizes.
 - **Workers Paid is a hard requirement for F2** (M1-11). Free-tier KV write
   limits are exceeded by normal staging volume; the failure is loud, not silent.
 - **`KV_HISAISHI_STAGING` is prefixed** because KV namespace names are

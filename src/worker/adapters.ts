@@ -171,6 +171,14 @@ export class D1DocStore implements DocStorePort {
     return row === null ? null : toRecord(row);
   }
 
+  async findByCidDigest(cidDigest: string): Promise<MemoryRecord | null> {
+    const row = await this.db
+      .prepare('SELECT * FROM memories WHERE lower(cid_digest) = lower(?) LIMIT 1')
+      .bind(cidDigest)
+      .first<Row>();
+    return row === null ? null : toRecord(row);
+  }
+
   async selectStaged(owner: string, limit: number): Promise<MemoryRecord[]> {
     const { results } = await this.db
       .prepare(

@@ -278,6 +278,31 @@ export async function content(ports: Ports, cid: string): Promise<Uint8Array> {
   return bytes;
 }
 
+/**
+ * Content by retrieval digest.
+ *
+ * A verifier holding a commitment knows `cidDigest` but not the CID: Pinata
+ * returns a CIDv0 hashing its dag-pb wrapper, so `sha256(bytes)` cannot be
+ * turned back into the pinned CID. This route is the digest → CID bridge. It
+ * returns the pinned CID alongside the bytes so the caller can report what was
+ * fetched. The gateway is trusted for availability and mapping only — a caller
+ * that verifies recomputes both digests over these bytes and will reject any
+ * substitution.
+ */
+export async function contentByDigest(
+  ports: Ports,
+  cidDigest: string,
+): Promise<{ cid: string; bytes: Uint8Array }> {
+  if (typeof cidDigest !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(cidDigest)) {
+    throw new GatewayError('INVALID_HEX', 'cidDigest must be 32-byte hex');
+  }
+  const row = await ports.docStore.findByCidDigest(cidDigest as `0x${string}`);
+  if (row === null) {
+    throw new GatewayError('CONTENT_NOT_FOUND', `${cidDigest} is not staged or pinned`);
+  }
+  return { cid: row.cid, bytes: await content(ports, row.cid) };
+}
+
 // --------------------------------------------------------------------------
 // validation helpers
 // --------------------------------------------------------------------------
@@ -286,7 +311,14 @@ export function assertAddress(value: string): `0x${string}` {
   if (typeof value !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(value)) {
     throw new GatewayError('INVALID_HEX', 'owner must be a 20-byte hex address');
   }
-  return value as `0x${string}`;
+  // Canonical form is lowercase. An address has one identity but many string
+  // spellings: wallets and wagmi hand back the EIP-55 checksummed form
+  // (`0x330c…2E610…`), while longstone and the chain store lowercase. Comparing
+  // the strings literally made the UI's `/v1/memories?owner=` query miss every
+  // row it had just written — a failure invisible to same-case test fixtures
+  // and to curl. Normalize at the single validation boundary so storage and
+  // lookup cannot disagree.
+  return value.toLowerCase() as `0x${string}`;
 }
 
 function assertTxHash(value: string): `0x${string}` {

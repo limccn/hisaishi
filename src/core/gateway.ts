@@ -13,6 +13,7 @@ import {
   build,
   confirm,
   content,
+  contentByDigest,
   list,
   stage,
   type BuildRequest,
@@ -34,6 +35,8 @@ export interface GatewayHandle {
   confirm(req: ConfirmRequest): Promise<GatewayResult<ConfirmResponse>>;
   list(req: ListRequest): Promise<GatewayResult<MemoryRow[]>>;
   content(cid: string): Promise<GatewayResult<Uint8Array>>;
+  /** Digest → pinned CID bridge for verifiers that know only chain state. */
+  contentByDigest(cidDigest: string): Promise<GatewayResult<{ cid: string; bytes: Uint8Array }>>;
   close(): Promise<void>;
 }
 
@@ -72,6 +75,7 @@ export function createGatewayHandle(ports: Ports, close: () => Promise<void> = a
     confirm: (req) => attempt(() => confirm(ports, req)),
     list: (req) => attempt(() => list(ports, req)),
     content: (cid) => attempt(() => content(ports, cid)),
+    contentByDigest: (cidDigest) => attempt(() => contentByDigest(ports, cidDigest)),
     close,
   };
 }

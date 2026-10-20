@@ -149,6 +149,16 @@ export class SqliteDocStore implements DocStorePort {
     return row === undefined ? null : toRecord(row);
   }
 
+  async findByCidDigest(cidDigest: string): Promise<MemoryRecord | null> {
+    // Hex is hex: the on-chain digest is lowercase, while a query string can
+    // arrive in any case. `cid_digest` has no index in M1 (the table is small
+    // and this is a verify-path read, not the hot list path).
+    const row = this.db
+      .prepare('SELECT * FROM memories WHERE lower(cid_digest) = lower(?) LIMIT 1')
+      .get(cidDigest) as Row | undefined;
+    return row === undefined ? null : toRecord(row);
+  }
+
   async selectStaged(owner: string, limit: number): Promise<MemoryRecord[]> {
     const rows = this.db
       .prepare(

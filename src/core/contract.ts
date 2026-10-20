@@ -65,6 +65,14 @@ export interface DocStorePort {
   insertOrGet(input: StageInput): Promise<MemoryRecord>;
   findByOwnerAndHash(owner: Hex, contentHash: Hex): Promise<MemoryRecord | null>;
   findByCid(cid: string): Promise<MemoryRecord | null>;
+  /**
+   * Lookup by the retrieval-layer digest. Needed because the pinned CID is not
+   * derivable from `sha256(bytes)` for every pin backend: Pinata's CIDv0 hashes
+   * its dag-pb wrapper, so a verifier holding only chain state cannot compute
+   * the CID. The row is the bridge from digest to CID; integrity still comes
+   * from the client recomputing both digests over the returned bytes.
+   */
+  findByCidDigest(cidDigest: Hex): Promise<MemoryRecord | null>;
   /** Oldest-first `staged` rows for an owner, up to `limit`. */
   selectStaged(owner: Hex, limit: number): Promise<MemoryRecord[]>;
   /** Flip staged → batched and persist the built batch. */

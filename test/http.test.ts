@@ -114,6 +114,33 @@ describe('HTTP transport', () => {
     expect(body.rows).toEqual([]);
   });
 
+  it('GET /v1/content?cidDigest= returns the pinned CID and bytes', async () => {
+    // The verify path starts from chain state (commitment.cidDigest) and cannot
+    // derive Pinata's CIDv0 locally, since that CID hashes the dag-pb wrapper.
+    // The row is the bridge; the header names the CID that was fetched.
+    const { app, harness } = makeApp();
+    const c = contentFor('digest-content');
+    const staged = await app.request('/v1/memories', {
+      method: 'POST',
+      body: JSON.stringify({
+        owner: OWNER,
+        content: c.content,
+        contentHash: c.contentHash,
+        tags: [],
+      }),
+    });
+    const body = (await staged.json()) as { cid: string };
+    harness.setContent(body.cid, c.bytes);
+
+    const response = await app.request(`/v1/content?cidDigest=${c.cidDigest}`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('x-ipfs-cid')).toBe(body.cid);
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(c.bytes);
+
+    const unknown = await app.request(`/v1/content?cidDigest=0x${'00'.repeat(32)}`);
+    expect(unknown.status).toBe(404);
+  });
+
   it('GET /v1/content serves bytes and distinguishes 404 from 502', async () => {
     const { app, harness } = makeApp();
     harness.setContent('bafkreibytes', new Uint8Array([1, 2, 3]));
@@ -189,5 +216,34 @@ describe('pin failure and D1 chunking', () => {
     const list = await app.request(`/v1/memories?owner=${OWNER}`);
     const body = (await list.json()) as { rows: unknown[] };
     expect(body.rows).toEqual([]);
+  });
+});
+
+describe('browser reachability (CORS)', () => {
+  // The UI is served from Pages/Vercel and calls this Worker on workers.dev.
+  // Regression: without the middleware, every staging fetch fails at the
+  // browser's preflight even though curl and same-origin tests pass.
+  it('answers the preflight with the methods the UI uses', async () => {
+    const { app } = makeApp();
+    const response = await app.request('/v1/memories?owner=0x0', {
+      method: 'OPTIONS',
+      headers: {
+        origin: 'https://longstone-ui.pages.dev',
+        'access-control-request-method': 'GET',
+      },
+    });
+    expect(response.status).toBe(204);
+    expect(response.headers.get('access-control-allow-origin')).toBe('*');
+    expect(response.headers.get('access-control-allow-methods')).toContain('GET');
+    expect(response.headers.get('access-control-allow-methods')).toContain('POST');
+  });
+
+  it('attaches the origin header to actual responses', async () => {
+    const { app } = makeApp();
+    const response = await app.request(`/v1/memories?owner=${OWNER}`, {
+      headers: { origin: 'https://longstone-ui.pages.dev' },
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('access-control-allow-origin')).toBe('*');
   });
 });
