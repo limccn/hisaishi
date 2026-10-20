@@ -126,9 +126,11 @@ pnpm build
 npx wrangler deploy
 ```
 
-`IPFS_GATEWAY` is required for `/v1/content`. Leaving it empty does not fall back
-to a public gateway — the route fails with `GATEWAY_UPSTREAM`, by design. Never
-substitute `ipfs.io` (M1-9: public gateways degrade and rate-limit).
+`IPFS_GATEWAY` is required for `/v1/content`. Give it a **dedicated** gateway
+(e.g. `https://<name>.mypinata.cloud`); the code appends `/ipfs/<cid>`, which is
+the path convention Pinata's gateways require. Leaving it empty does not fall
+back to a public gateway — the route fails with `GATEWAY_UPSTREAM`, by design.
+Never substitute `ipfs.io` (M1-9).
 
 Without `PINATA_JWT` the gateway uses the deterministic offline pin adapter:
 same CID shape, no network, nothing actually pinned. Fine for staging and tests;
@@ -197,10 +199,13 @@ the suite asserting against the harness's internal store instead of the adapter.
 - `KV_EMB` is unbound: reserved for M2 embedding sync, never written in M1.
 - `/v1/content` does not verify fetched bytes against `cid_digest` before
   caching; clients verify both digests downstream.
+- The stored CID is whatever the pin backend returns (Pinata returns CIDv0
+  `Qm…`), so it will not match a locally computed CIDv1. Integrity never depends
+  on it — `cidDigest` is computed from the bytes (D-9).
 - `/v1/memories` has no cursor pagination.
 - F1 concurrency is WAL + one writer per process; stronger guarantees are out
   of scope.
-- No Pinata credentials means nothing is actually pinned (offline adapter).
+- Without `PINATA_JWT` nothing is actually pinned (the offline adapter returns a deterministic CID).
 
 ## Operational notes
 
@@ -208,5 +213,12 @@ the suite asserting against the harness's internal store instead of the adapter.
   limits are exceeded by normal staging volume; the failure is loud, not silent.
 - **`KV_HISAISHI_STAGING` is prefixed** because KV namespace names are
   account-global and a bare `KV_STAGING` risks colliding with another project.
+- **A binding name may be either a var or a secret, never both.** Cloudflare
+  rejects the pair with code 10053; `IPFS_GATEWAY` is a secret, so it has no
+  `vars` entry in `wrangler.jsonc`.
+- **Gateways disagree on "not pinned".** Pinata answers **403** with a
+  "does not have this content pinned" body; a malformed CID is **400**. Both are
+  classified (`core/gateway-url.ts`) so a client sees `CONTENT_NOT_FOUND` or
+  `INVALID_HASH`, not a generic outage.
 - **The D1 binding is `DB`, not the database name.** `wrangler d1 create`
   suggests `hisaishi_staging`; choosing it would require changing the Worker.
