@@ -1,0 +1,42 @@
+{
+  "name": "@hisaishi/gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/core/index.d.ts",
+      "import": "./dist/core/index.js"
+    },
+    "./local": {
+      "types": "./dist/local/gateway.d.ts",
+      "import": "./dist/local/gateway.js"
+    },
+    "./worker": {
+      "types": "./dist/worker/index.d.ts",
+      "import": "./dist/worker/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.test.json",
+    "dev": "node --experimental-sqlite dist/local/serve.js",
+    "generate:abi": "node ../../scripts/export-abi.mjs"
+  },
+  "dependencies": {
+    "@menhir/core": "workspace:*",
+    "hono": "4.13.13",
+    "viem": "2.57.7",
+    "zod": "4.6.7",
+    "@hono/node-server": "2.1.5"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.5",
+    "typescript": "7.0.2",
+    "vitest": "5.0.5"
+  },
+  "bin": {
+    "hisaishi-local": "./dist/local/cli.js"
+  }
+}

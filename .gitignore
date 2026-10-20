@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+*.tsbuildinfo
+
+# Local gateway state (F1 node:sqlite file + content cache)
+.longstone/
+*.db
+*.db-wal
+*.db-shm
