@@ -1,0 +1,52 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# hisaishi imports `@menhir/core` as `workspace:*`, so CI assembles the
+# workspace: the sibling menhir repo plus this one.
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: workspace/hisaishi
+      - uses: actions/checkout@v4
+        with:
+          repository: limccn/menhir
+          token: ${{ secrets.MENHIR_REPO_TOKEN || github.token }}
+          path: workspace/menhir
+
+      - name: Assemble workspace
+        working-directory: workspace
+        run: |
+          printf 'packages:\n  - "menhir/ts"\n  - "hisaishi"\n' > pnpm-workspace.yaml
+          printf '{"name":"ci-workspace","private":true,"packageManager":"pnpm@12.11.2"}\n' > package.json
+
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: workspace/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: pnpm install --no-frozen-lockfile
+        working-directory: workspace
+
+      - run: pnpm --filter @menhir/core build
+        working-directory: workspace
+
+      # Includes the D1 + KV parity harness (miniflare) and the workerd smoke,
+      # which rebuilds the real wrangler bundle before running.
+      - run: pnpm --filter @hisaishi/gateway build
+        working-directory: workspace
+      - run: pnpm --filter @hisaishi/gateway test
+        working-directory: workspace
+      - run: pnpm --filter @hisaishi/gateway typecheck
+        working-directory: workspace
