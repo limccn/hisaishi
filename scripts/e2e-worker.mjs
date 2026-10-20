@@ -42,6 +42,23 @@ async function post(path, body) {
   });
 }
 
+/**
+ * Retry a check that depends on an eventually-consistent upstream.
+ *
+ * A freshly pinned CID is not instantly retrievable from the gateway, and the
+ * public RPC rate-limits a burst of confirm calls. Both produce transient
+ * failures that have nothing to do with the Worker.
+ */
+async function retry(fn, attempts = 8, delayMs = 2000) {
+  let last;
+  for (let i = 0; i < attempts; i += 1) {
+    last = await fn();
+    if (last.ok) return last;
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+  return last;
+}
+
 async function main() {
   console.log(`target ${BASE}`);
 
@@ -86,15 +103,23 @@ async function main() {
     /^0x[0-9a-f]{64}$/.test(String(builtBody.tagLists?.[0]?.[0] ?? '')),
   );
 
-  // 4. confirm: unmined tx is pending, no write
-  const pending = await post('/v1/batches/confirm', { owner: OWNER, txHash: TX_HASH });
-  const pendingBody = await pending.json();
-  check('confirm pending is 202', pending.status === 202);
-  check("confirm pending says 'pending'", pendingBody.status === 'pending');
+  // 4. confirm: unmined tx is pending, no write. Retried because the public
+  // RPC may 429 a burst (the Worker maps that to 502 RPC_UNAVAILABLE).
+  const pending = await retry(async () => {
+    const response = await post('/v1/batches/confirm', { owner: OWNER, txHash: TX_HASH });
+    const body = await response.json();
+    return { ok: response.status === 202 && body.status === 'pending', status: response.status, body };
+  });
+  check('confirm pending is 202', pending.status === 202, JSON.stringify(pending.body));
+  check("confirm pending says 'pending'", pending.body?.status === 'pending');
 
   // 5. content outcomes
-  const pinned = await fetch(`${BASE}/v1/content?cid=${encodeURIComponent(stagedBody.cid)}`);
-  check('content for a freshly pinned cid is 200', pinned.status === 200, `status ${pinned.status}`);
+  // Pinata propagation is eventual: a just-pinned CID can 404 for a moment.
+  const pinned = await retry(async () => {
+    const response = await fetch(`${BASE}/v1/content?cid=${encodeURIComponent(stagedBody.cid)}`);
+    return { ok: response.status === 200, status: response.status };
+  });
+  check('content for a freshly pinned cid is 200', pinned.ok, `status ${pinned.status}`);
 
   const unpinned = await fetch(
     `${BASE}/v1/content?cid=bafkreih45p25diqccyx44fl27umvibd74kmnp7nrnybgqfh4l6zmwgwsvq`,
