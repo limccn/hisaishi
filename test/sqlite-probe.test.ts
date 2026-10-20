@@ -150,3 +150,24 @@ describe('M1-19: SQLite behaviour the adapter depends on', () => {
     expect(DDL).toContain('PRIMARY KEY (owner, content_hash)');
   });
 });
+
+describe('first-run bootstrap', () => {
+  it('creates the parent directory for a nested default path', async () => {
+    // `DatabaseSync` does not create directories. The documented default
+    // (`.longstone/hisaishi.db`) lives in one that does not exist on a fresh
+    // machine, so a missing mkdir turns the documented default into a crash.
+    const dir = await mkdtemp(join(tmpdir(), 'hisaishi-firstrun-'));
+    dirs.push(dir);
+    const nested = join(dir, 'does', 'not', 'exist', 'gateway.db');
+
+    const db = openDatabase(nested);
+    try {
+      const tables = db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+        .all() as Array<{ name: string }>;
+      expect(tables.length).toBeGreaterThan(0);
+    } finally {
+      db.close();
+    }
+  });
+});

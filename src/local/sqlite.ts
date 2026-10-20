@@ -14,6 +14,8 @@
  * through one connection, which the process-wide singleton below enforces.
  */
 
+import { mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import type {
@@ -264,6 +266,13 @@ export class SqliteContentCache implements ContentCachePort {
  * (`hisaishi-local serve` plus an embedded client).
  */
 export function openDatabase(path: string): DatabaseSync {
+  // `DatabaseSync` will not create a missing parent directory, and the default
+  // path (`.longstone/hisaishi.db`) sits in one that does not exist on a fresh
+  // machine. Creating it here makes first-run work without a setup step; the
+  // `:memory:` case has no directory and is skipped.
+  if (path !== ':memory:') {
+    mkdirSync(dirname(path), { recursive: true });
+  }
   const db = new DatabaseSync(path);
   db.exec('PRAGMA journal_mode = WAL');
   db.exec('PRAGMA busy_timeout = 5000');
