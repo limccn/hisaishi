@@ -27,7 +27,10 @@ jobs:
       - name: Assemble workspace
         working-directory: workspace
         run: |
-          printf 'packages:\n  - "menhir/ts"\n  - "hisaishi"\n' > pnpm-workspace.yaml
+          # pnpm 12 hard-fails on unapproved build scripts (ERR_PNPM_IGNORED_BUILDS).
+          # These three are required by the toolchain: esbuild by the bundlers,
+          # sharp and workerd by miniflare/wrangler.
+          printf 'packages:\n  - "menhir/ts"\n  - "hisaishi"\nallowBuilds:\n  "esbuild": true\n  "sharp": true\n  "workerd": true\n' > pnpm-workspace.yaml
           printf '{"name":"ci-workspace","private":true,"packageManager":"pnpm@12.11.2"}\n' > package.json
 
       - uses: pnpm/action-setup@v4
