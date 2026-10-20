@@ -11,16 +11,15 @@ Signing belongs to [longstone](../longstone); hisaishi only prepares.
 | Form | Runtime | Status |
 |---|---|---|
 | **F1 local** | Node 24 + `node:sqlite` | **implemented** — M1 primary |
-| **F2 remote** | Cloudflare Workers + D1 + KV | **deferred** — see below |
+| **F2 remote** | Cloudflare Workers + D1 + KV | **implemented and deployed** |
 
 Both forms expose the same HTTP JSON routes and the same error codes. F1 can run
 standalone (`hisaishi-local`) or embedded in longstone's process via
 `createGateway()`.
 
-> **F2 is deferred, not partial.** No Workers implementation exists. It trails
-> F1 landfall by design (it needs a Workers Paid plan and Cloudflare
-> credentials); the deferral is recorded in the task PRD with a resume
-> condition rather than left implicit.
+**Parity is tested, not asserted.** One shared contract suite runs on three
+backends: in-memory ports, the real `node:sqlite` adapter, and real D1 + KV from
+miniflare. A behaviour that differs between forms fails that suite.
 
 ## Routes
 
@@ -75,6 +74,85 @@ const result = await handle.stage({
 The handle returns a discriminated `GatewayResult` — the same shape the HTTP
 layer produces, so a caller never carries two error models.
 
+## Deploy F2 (Cloudflare Workers)
+
+F2 needs a Workers **Paid** plan: the Free tier allows 1,000 KV writes/day, which
+staging alone exhausts (pitfall M1-11). There is no code workaround — the
+deployed form simply stops working past that limit.
+
+### One-time setup
+
+```powershell
+# 1. Authenticate (OAuth, not an API token — nothing to leak into shell history)
+npx wrangler login
+
+# 2. Provision storage
+npx wrangler d1 create hisaishi-staging
+npx wrangler kv namespace create KV_HISAISHI_STAGING
+```
+
+`wrangler d1 create` suggests a binding name derived from the database name
+(e.g. `hisaishi_staging`). **The binding is yours to choose and must be `DB`** —
+that is what the Worker reads (`env.DB`) and what the design's bindings table
+says. Put the returned `database_id` and KV `id` into `wrangler.jsonc`:
+
+```jsonc
+"d1_databases": [
+  { "binding": "DB", "database_name": "hisaishi-staging",
+    "database_id": "<uuid>", "migrations_dir": "migrations" }
+],
+"kv_namespaces": [
+  { "binding": "KV_HISAISHI_STAGING", "id": "<id>" }
+]
+```
+
+`KV_EMB` is reserved for M2 embedding sync. It is declared **optional** in the
+`Bindings` type and deliberately unbound in M1 — nothing reads or writes it, and
+a placeholder id would fail the deploy.
+
+### Apply the schema, set secrets, deploy
+
+```powershell
+# 3. Schema (must match F1's DDL — a test asserts it does)
+npx wrangler d1 migrations apply hisaishi-staging --remote
+
+# 4. Secrets — never in wrangler.jsonc, never in a committed file
+npx wrangler secret put RPC_URL          # e.g. https://sepolia.base.org
+npx wrangler secret put IPFS_GATEWAY     # dedicated gateway ONLY (M1-9)
+npx wrangler secret put PINATA_JWT       # optional; omit for the offline adapter
+
+# 5. Deploy
+pnpm build
+npx wrangler deploy
+```
+
+`IPFS_GATEWAY` is required for `/v1/content`. Leaving it empty does not fall back
+to a public gateway — the route fails with `GATEWAY_UPSTREAM`, by design. Never
+substitute `ipfs.io` (M1-9: public gateways degrade and rate-limit).
+
+Without `PINATA_JWT` the gateway uses the deterministic offline pin adapter:
+same CID shape, no network, nothing actually pinned. Fine for staging and tests;
+not a substitute for a real pin where content must survive independently.
+
+### Deployed smoke
+
+```powershell
+$BASE = "https://<worker>.<subdomain>.workers.dev"
+$OWNER = "0x" + ("11" * 20)
+
+# integrity gate: a wrong hash is rejected and nothing is written
+curl.exe -s -X POST "$BASE/v1/memories" -H "content-type: application/json" `
+  -d "{`"owner`":`"$OWNER`",`"content`":{`"text`":`"x`",`"format`":`"text.v0`"},`"contentHash`":`"0x$('00'*32)`",`"tags`":[]}"
+
+# staging → build → list
+curl.exe -s "$BASE/v1/memories?owner=$OWNER"
+curl.exe -s -X POST "$BASE/v1/batches/build" -H "content-type: application/json" -d "{`"owner`":`"$OWNER`"}"
+```
+
+A healthy Worker answers typed errors (`INVALID_HEX`, `INVALID_HASH`,
+`SCHEMA_VIOLATION`) with the matching status — never a stack trace and never a
+500. A 500 means the Worker threw before reaching the shared routes.
+
 ## Storage
 
 One SQLite file holds everything:
@@ -110,8 +188,19 @@ the suite asserting against the harness's internal store instead of the adapter.
 
 ## Known limits (M1)
 
-- F2 not implemented (Workers/D1/KV).
+- `KV_EMB` is unbound: reserved for M2 embedding sync, never written in M1.
 - `/v1/content` does not verify fetched bytes against `cid_digest` before
   caching; clients verify both digests downstream.
 - `/v1/memories` has no cursor pagination.
-- Concurrency stronger than WAL + one writer per process is out of scope.
+- F1 concurrency is WAL + one writer per process; stronger guarantees are out
+  of scope.
+- No Pinata credentials means nothing is actually pinned (offline adapter).
+
+## Operational notes
+
+- **Workers Paid is a hard requirement for F2** (M1-11). Free-tier KV write
+  limits are exceeded by normal staging volume; the failure is loud, not silent.
+- **`KV_HISAISHI_STAGING` is prefixed** because KV namespace names are
+  account-global and a bare `KV_STAGING` risks colliding with another project.
+- **The D1 binding is `DB`, not the database name.** `wrangler d1 create`
+  suggests `hisaishi_staging`; choosing it would require changing the Worker.
