@@ -20,10 +20,10 @@ export default {
     // deployment is misconfigured, not that some route is unsafe.
     assertKeylessBindings(env as unknown as Record<string, unknown>);
 
-    const docStore = new D1DocStore(env.DB, env.KV_STAGING);
+    const docStore = new D1DocStore(env.DB, env.KV_HISAISHI_STAGING);
     const ports: Ports = {
       docStore,
-      contentCache: new KvContentCache(env.KV_STAGING),
+      contentCache: new KvContentCache(env.KV_HISAISHI_STAGING),
       pin: createMemoryPin(env.PINATA_JWT),
       rpc: createReceiptRpc(env.RPC_URL),
       fetchContent: createGatewayContentFetch(env.IPFS_GATEWAY),

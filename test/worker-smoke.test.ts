@@ -29,7 +29,7 @@ describe('@menhir/core under workerd', () => {
       compatibilityDate: '2026-08-04',
       compatibilityFlags: ['nodejs_compat'],
       d1Databases: { DB: 'smoke' },
-      kvNamespaces: ['KV_STAGING', 'KV_EMB'],
+      kvNamespaces: ['KV_HISAISHI_STAGING', 'KV_EMB'],
       bindings: { RPC_URL: 'https://rpc.invalid', IPFS_GATEWAY: '' },
     });
     try {
@@ -58,7 +58,7 @@ describe('keyless audit (F2)', () => {
     expect(() =>
       assertKeylessBindings({
         DB: {},
-        KV_STAGING: {},
+        KV_HISAISHI_STAGING: {},
         KV_EMB: {},
         RPC_URL: 'https://rpc.test',
         IPFS_GATEWAY: 'https://gw.test',

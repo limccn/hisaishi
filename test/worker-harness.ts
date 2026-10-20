@@ -27,11 +27,11 @@ export async function createWorkerHarness(): Promise<WorkerHarnessResult> {
     script: 'export default { fetch() { return new Response("ok"); } }',
     compatibilityDate: '2026-08-04',
     d1Databases: { DB: 'hisaishi-test' },
-    kvNamespaces: ['KV_STAGING', 'KV_EMB'],
+    kvNamespaces: ['KV_HISAISHI_STAGING', 'KV_EMB'],
   });
 
   const db = (await mf.getD1Database('DB')) as unknown as D1Like;
-  const kv = (await mf.getKVNamespace('KV_STAGING')) as unknown as KVLike;
+  const kv = (await mf.getKVNamespace('KV_HISAISHI_STAGING')) as unknown as KVLike;
 
   // The DDL is the F1 constant, verbatim: the parity rule is that both forms
   // run the same schema, and applying anything else would test a different one.

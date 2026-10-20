@@ -24,7 +24,7 @@
 
   "kv_namespaces": [
     {
-      "binding": "KV_STAGING",
+      "binding": "KV_HISAISHI_STAGING",
       "id": "00000000000000000000000000000000"
     },
     {

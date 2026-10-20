@@ -11,7 +11,7 @@ import type { D1Like, KVLike } from './adapters.js';
 export interface Bindings {
   DB: D1Like;
   /** dedup:{owner}:{contentHash} → cid, plus content:{cid} bytes. */
-  KV_STAGING: KVLike;
+  KV_HISAISHI_STAGING: KVLike;
   /** Reserved for M2 embedding sync. Declared, never written in M1. */
   KV_EMB: KVLike;
   RPC_URL: string;
