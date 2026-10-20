@@ -132,11 +132,29 @@ the path convention Pinata's gateways require. Leaving it empty does not fall
 back to a public gateway — the route fails with `GATEWAY_UPSTREAM`, by design.
 Never substitute `ipfs.io` (M1-9).
 
-Without `PINATA_JWT` the gateway uses the deterministic offline pin adapter:
-same CID shape, no network, nothing actually pinned. Fine for staging and tests;
-not a substitute for a real pin where content must survive independently.
+**`PINATA_JWT` is required unless `DEV_MODE=true`.** Without a JWT and without
+dev mode the Worker refuses to construct, because a deterministic offline CID
+for bytes that were never stored lets stage report success for content that can
+never be fetched (review R17). With `DEV_MODE=true` the offline adapter is used
+deliberately — fine for local tests, never for a deployment that anchors memory.
+
+`REGISTRY_ADDRESS` is also required: confirm only trusts `MemoryCommitted` logs
+emitted by that contract. Any contract can emit the same signature.
 
 ### Deployed smoke
+
+The smoke is a script, so it is reproducible:
+
+```powershell
+$env:BASE_URL = "https://<worker>.<subdomain>.workers.dev"
+node scripts/e2e-worker.mjs
+```
+
+It checks stage, dedup, build placeholders, confirm-pending, and the three
+content outcomes (pinned 200 / unpinned 404 / malformed 400). Exit code is
+non-zero on the first mismatch. It needs no credentials and spends no gas.
+
+The equivalent hand-run commands:
 
 ```powershell
 $BASE = "https://<worker>.<subdomain>.workers.dev"
@@ -185,12 +203,12 @@ shares the file.
 ## Tests
 
 ```powershell
-pnpm test        # 57 tests
+pnpm test        # 114 tests
 pnpm typecheck
 ```
 
-The shared contract suite runs twice: once on an in-memory harness, once on the
-real `node:sqlite` adapter. Running both is what makes "the forms share a
+The shared contract suite runs three times: on an in-memory harness, on the real
+`node:sqlite` adapter, and on real D1 + KV from miniflare. Running both is what makes "the forms share a
 contract" a test rather than an assumption — and the second run is what caught
 the suite asserting against the harness's internal store instead of the adapter.
 

@@ -183,7 +183,15 @@ export async function confirm(ports: Ports, req: ConfirmRequest): Promise<Confir
   const owner = assertAddress(req.owner);
   const txHash = assertTxHash(req.txHash);
 
-  const receipt = await ports.rpc.getTransactionReceipt(txHash);
+  let receipt;
+  try {
+    receipt = await ports.rpc.getTransactionReceipt(txHash);
+  } catch (error) {
+    // An RPC outage is not an internal bug. A 429 from the public endpoint is
+    // the most common cause, and reporting INTERNAL sends an operator looking
+    // for a defect instead of backing off (found on the deployed Worker).
+    throw new GatewayError('RPC_UNAVAILABLE', (error as Error).message);
+  }
   if (receipt === null) {
     return { status: 'pending', retryAfter: 12 };
   }
@@ -251,7 +259,9 @@ export async function content(ports: Ports, cid: string): Promise<Uint8Array> {
     const flags = error as { notFound?: boolean; invalidCid?: boolean } | null;
     // Three distinct facts, three distinct codes: absent vs malformed vs down.
     if (flags?.invalidCid === true) {
-      throw new GatewayError('INVALID_HASH', (error as Error).message);
+      // A CID the gateway cannot parse is malformed input, not a hash mismatch.
+      // INVALID_HASH is defined for keccak disagreement (design §6).
+      throw new GatewayError('SCHEMA_VIOLATION', (error as Error).message);
     }
     throw new GatewayError(
       flags?.notFound === true ? 'CONTENT_NOT_FOUND' : 'GATEWAY_UPSTREAM',
@@ -259,7 +269,12 @@ export async function content(ports: Ports, cid: string): Promise<Uint8Array> {
     );
   }
 
-  await ports.contentCache.put(key, bytes, 7 * 24 * 60 * 60 * 1000);
+  try {
+    await ports.contentCache.put(key, bytes, 7 * 24 * 60 * 60 * 1000);
+  } catch {
+    // A cache is an optimization. If the write fails (KV value cap, quota), the
+    // bytes are still valid and must be returned (review M6).
+  }
   return bytes;
 }
 

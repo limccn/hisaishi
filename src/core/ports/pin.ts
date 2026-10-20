@@ -52,6 +52,26 @@ export function createPinataPin(jwt: string, timeoutMs = 20_000): PinPort {
   };
 }
 
-export function createMemoryPin(pinataJwt: string | undefined): PinPort {
-  return pinataJwt === undefined || pinataJwt === '' ? createDevPin() : createPinataPin(pinataJwt);
+/**
+ * Select the pin adapter.
+ *
+ * The offline adapter is chosen by an EXPLICIT `devMode`, never by the mere
+ * absence of a JWT (review 2026-10-20, H2). The earlier behaviour let a
+ * deployment without `PINATA_JWT` return `200 {status:'staged'}` with a
+ * deterministic CID for bytes that were never stored anywhere — longstone would
+ * then anchor a contentHash whose content can never be fetched, and nothing
+ * failed at write time.
+ */
+export function createMemoryPin(
+  pinataJwt: string | undefined,
+  devMode: boolean,
+): PinPort {
+  if (devMode) return createDevPin();
+  if (pinataJwt === undefined || pinataJwt === '') {
+    throw new Error(
+      'PINATA_JWT is required unless DEV_MODE is explicitly enabled. ' +
+        'Refusing to stage content that would never be pinned.',
+    );
+  }
+  return createPinataPin(pinataJwt);
 }

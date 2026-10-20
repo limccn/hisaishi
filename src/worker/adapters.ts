@@ -154,7 +154,13 @@ export class D1DocStore implements DocStorePort {
    */
   private async rememberCid(owner: string, contentHash: string, cid: string): Promise<void> {
     if (this.kv === undefined) return;
-    await this.kv.put(dedupKey(owner, contentHash), cid);
+    try {
+      await this.kv.put(dedupKey(owner, contentHash), cid);
+    } catch {
+      // The mirror is a convenience with no reader. A KV quota error must not
+      // turn a successful D1 write and pin into a 500 (review M1) — that is
+      // exactly the Free-tier cliff the PRD warns about.
+    }
   }
 
   async findByCid(cid: string): Promise<MemoryRecord | null> {
@@ -196,15 +202,23 @@ export class D1DocStore implements DocStorePort {
 
   async findBatchedByHashes(owner: string, contentHashes: string[]): Promise<MemoryRecord[]> {
     if (contentHashes.length === 0) return [];
-    const placeholders = contentHashes.map(() => '?').join(',');
-    const { results } = await this.db
-      .prepare(
-        `SELECT * FROM memories
-         WHERE owner = ? AND status = 'batched' AND content_hash IN (${placeholders})`,
-      )
-      .bind(owner, ...contentHashes)
-      .all<Row>();
-    return results.map(toRecord);
+    // D1 caps bound parameters at 100. Chunk so a receipt carrying two
+    // commitBatch calls (2×64 logs) cannot turn confirm into a 500 (review M3).
+    const CHUNK = 50;
+    const rows: Row[] = [];
+    for (let i = 0; i < contentHashes.length; i += CHUNK) {
+      const chunk = contentHashes.slice(i, i + CHUNK);
+      const placeholders = chunk.map(() => '?').join(',');
+      const { results } = await this.db
+        .prepare(
+          `SELECT * FROM memories
+           WHERE owner = ? AND status = 'batched' AND content_hash IN (${placeholders})`,
+        )
+        .bind(owner, ...chunk)
+        .all<Row>();
+      rows.push(...results);
+    }
+    return rows.map(toRecord);
   }
 
   async markSettled(

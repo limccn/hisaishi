@@ -12,7 +12,7 @@ import { memoryRegistryAbi } from '@menhir/core';
 
 import type { ReceiptLike, RpcPort } from '../core/contract.js';
 
-export function createReceiptRpc(rpcUrl: string): RpcPort {
+export function createReceiptRpc(rpcUrl: string, registryAddress: `0x${string}`): RpcPort {
   const client = createPublicClient({ transport: http(rpcUrl) });
 
   return {
@@ -22,11 +22,18 @@ export function createReceiptRpc(rpcUrl: string): RpcPort {
       const receipt = await client.getTransactionReceipt({ hash: txHash });
       if (receipt === null) return null;
 
+      // Only logs emitted BY THE REGISTRY count. Any contract can emit an event
+      // with this signature, so without the address filter a forged
+      // MemoryCommitted could flip a batched row to anchored (review M4).
+      const registryLogs = receipt.logs.filter(
+        (log) => log.address.toLowerCase() === registryAddress.toLowerCase(),
+      );
+
       // Decode through @menhir/core's generated ABI rather than a local event
       // fragment, so a contract event change breaks the import, not the decode.
       const logs = parseEventLogs({
         abi: memoryRegistryAbi,
-        logs: receipt.logs,
+        logs: registryLogs,
         eventName: 'MemoryCommitted',
       });
 

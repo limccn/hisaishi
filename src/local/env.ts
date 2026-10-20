@@ -13,6 +13,7 @@
 export interface LocalEnv {
   HISAISHI_DB_PATH: string;
   RPC_URL: string;
+  REGISTRY_ADDRESS: `0x${string}`;
   IPFS_GATEWAY: string;
   PINATA_JWT: string | undefined;
   PORT: string | undefined;
@@ -40,7 +41,7 @@ export function assertKeylessEnv(env: Record<string, string | undefined>): void 
   // Structural check: any env var whose name suggests a key. Deliberately
   // broad — a false positive is a rename, a false negative is a leaked key.
   for (const name of Object.keys(env)) {
-    if (/private[_-]?key|mnemonic|seed[_-]?phrase|signing[_-]?key/i.test(name)) {
+    if (/(?:^|_)key$|private[_-]?key|mnemonic|seed[_-]?phrase|signing[_-]?key/i.test(name)) {
       throw new Error(`hisaishi env contains key-shaped variable: ${name}`);
     }
   }
@@ -56,9 +57,14 @@ export function readLocalEnv(env: Record<string, string | undefined>): LocalEnv 
   if (ipfsGateway === undefined || ipfsGateway === '') {
     throw new Error('IPFS_GATEWAY is required (dedicated gateway only — M1-9)');
   }
+  const registryAddress = env.REGISTRY_ADDRESS;
+  if (registryAddress === undefined || !/^0x[0-9a-fA-F]{40}$/.test(registryAddress)) {
+    throw new Error('REGISTRY_ADDRESS is required (20-byte hex)');
+  }
   return {
     HISAISHI_DB_PATH: env.HISAISHI_DB_PATH ?? '.longstone/hisaishi.db',
     RPC_URL: rpcUrl,
+    REGISTRY_ADDRESS: registryAddress as `0x${string}`,
     IPFS_GATEWAY: ipfsGateway,
     PINATA_JWT: env.PINATA_JWT,
     PORT: env.PORT,

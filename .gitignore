@@ -11,3 +11,6 @@ dist/
 *.db-wal
 *.db-shm
 .wrangler-smoke/
+
+# Wrangler local state and the smoke bundle (both are build artifacts)
+.wrangler/

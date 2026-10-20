@@ -21,10 +21,14 @@ export interface LocalGatewayOptions {
   /** `:memory:` is valid and is what the harness uses. */
   dbPath: string;
   rpcUrl: string;
+  /** Registry whose logs confirm trusts. Forged events are ignored. */
+  registryAddress: `0x${string}`;
   /** Dedicated IPFS gateway (M1-9). Never a public fallback. */
   ipfsGateway: string;
   /** When absent, pinning falls back to the offline dev adapter (R11). */
   pinataJwt?: string | undefined;
+  /** Explicit offline pin mode. Never inferred from a missing JWT. */
+  devMode?: boolean | undefined;
   /** Overrides for tests; in production the defaults below are used. */
   docStore?: DocStorePort | undefined;
   contentCache?: ContentCachePort | undefined;
@@ -44,10 +48,10 @@ export async function createGateway(opts: LocalGatewayOptions): Promise<OpenGate
 
   const docStore = opts.docStore ?? new SqliteDocStore(db);
   const contentCache = opts.contentCache ?? new SqliteContentCache(db);
-  const rpc = opts.rpc ?? (await import('./rpc.js')).createReceiptRpc(opts.rpcUrl);
+  const rpc = opts.rpc ?? (await import('./rpc.js')).createReceiptRpc(opts.rpcUrl, opts.registryAddress);
   // One pin implementation for both forms (core/ports/pin.ts). A second copy
   // in local/ would be a second place for the Pinata call to drift.
-  const pin = opts.pin ?? (await import('../core/ports/pin.js')).createMemoryPin(opts.pinataJwt);
+  const pin = opts.pin ?? (await import('../core/ports/pin.js')).createMemoryPin(opts.pinataJwt, opts.devMode === true);
 
   const client = createHisaishiClient({
     ipfsGateway: opts.ipfsGateway,

@@ -24,8 +24,8 @@ export default {
     const ports: Ports = {
       docStore,
       contentCache: new KvContentCache(env.KV_HISAISHI_STAGING),
-      pin: createMemoryPin(env.PINATA_JWT),
-      rpc: createReceiptRpc(env.RPC_URL),
+      pin: createMemoryPin(env.PINATA_JWT, env.DEV_MODE === 'true'),
+      rpc: createReceiptRpc(env.RPC_URL, env.REGISTRY_ADDRESS),
       fetchContent: createGatewayContentFetch(env.IPFS_GATEWAY),
       now: () => Date.now(),
     };

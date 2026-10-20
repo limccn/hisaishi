@@ -30,7 +30,12 @@ describe('@menhir/core under workerd', () => {
       compatibilityFlags: ['nodejs_compat'],
       d1Databases: { DB: 'smoke' },
       kvNamespaces: ['KV_HISAISHI_STAGING', 'KV_EMB'],
-      bindings: { RPC_URL: 'https://rpc.invalid', IPFS_GATEWAY: '' },
+      bindings: {
+        RPC_URL: 'https://rpc.invalid',
+        REGISTRY_ADDRESS: '0x' + '11'.repeat(20),
+        IPFS_GATEWAY: '',
+        DEV_MODE: 'true',
+      },
     });
     try {
       // The bundled Worker is the real gateway; a POST to the stage route

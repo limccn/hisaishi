@@ -178,6 +178,12 @@ export class MemoryRpc implements RpcPort {
 
 export interface Harness {
   ports: Ports;
+  /**
+   * Called through a mutable holder so a test can replace the fetch behaviour
+   * and have the handle observe it. Copying the function into `ports` made the
+   * cache-hit assertion impossible to fail (review M2).
+   */
+  setFetchContent(fn: (cid: string) => Promise<Uint8Array>): void;
   docStore: MemoryDocStore;
   contentCache: MemoryContentCache;
   pin: MemoryPin;
@@ -195,24 +201,31 @@ export function createMemoryHarness(now: () => number = () => 1_700_000_000_000)
   const contents = new Map<string, Uint8Array>();
   const failures = new Map<string, 'notFound' | 'upstream'>();
 
+  const defaultFetch = async (cid: string): Promise<Uint8Array> => {
+    const failure = failures.get(cid);
+    if (failure === 'notFound') {
+      throw Object.assign(new Error(`content ${cid} not found`), { notFound: true });
+    }
+    if (failure === 'upstream') throw new Error(`gateway failed for ${cid}`);
+    const bytes = contents.get(cid);
+    if (bytes === undefined) {
+      throw Object.assign(new Error(`content ${cid} not found`), { notFound: true });
+    }
+    return bytes;
+  };
+
+  // A mutable holder, so `setFetchContent` actually affects the handle: the
+  // handle holds `ports.fetchContent`, and that function must look up the
+  // current implementation on every call (review M2).
+  let fetchHolder: (cid: string) => Promise<Uint8Array> = defaultFetch;
+
   const ports: Ports = {
     docStore,
     contentCache,
     pin,
     rpc,
     now,
-    fetchContent: async (cid: string) => {
-      const failure = failures.get(cid);
-      if (failure === 'notFound') {
-        throw Object.assign(new Error(`content ${cid} not found`), { notFound: true });
-      }
-      if (failure === 'upstream') throw new Error(`gateway failed for ${cid}`);
-      const bytes = contents.get(cid);
-      if (bytes === undefined) {
-        throw Object.assign(new Error(`content ${cid} not found`), { notFound: true });
-      }
-      return bytes;
-    },
+    fetchContent: (cid: string) => fetchHolder(cid),
   };
 
   return {
@@ -223,5 +236,8 @@ export function createMemoryHarness(now: () => number = () => 1_700_000_000_000)
     rpc,
     setContent: (cid, bytes) => contents.set(cid, bytes),
     setFetchFailure: (cid, kind) => failures.set(cid, kind),
+    setFetchContent: (fn) => {
+      fetchHolder = fn;
+    },
   };
 }

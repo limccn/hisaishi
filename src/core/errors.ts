@@ -18,6 +18,7 @@ export type ErrorCode =
   | 'CONTENT_NOT_FOUND'
   | 'PIN_FAILED'
   | 'GATEWAY_UPSTREAM'
+  | 'RPC_UNAVAILABLE'
   | 'INTERNAL';
 
 export const HTTP_STATUS: Readonly<Record<ErrorCode, number>> = {
@@ -32,6 +33,7 @@ export const HTTP_STATUS: Readonly<Record<ErrorCode, number>> = {
   CONTENT_NOT_FOUND: 404,
   PIN_FAILED: 502,
   GATEWAY_UPSTREAM: 502,
+  RPC_UNAVAILABLE: 502,
   INTERNAL: 500,
 };
 

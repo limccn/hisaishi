@@ -18,6 +18,7 @@ export interface Bindings {
    */
   KV_EMB?: KVLike | undefined;
   RPC_URL: string;
+  REGISTRY_ADDRESS: `0x${string}`;
   IPFS_GATEWAY: string;
   PINATA_JWT: string | undefined;
   DEV_MODE: string | undefined;
@@ -42,7 +43,7 @@ export function assertKeylessBindings(env: Record<string, unknown>): void {
     }
   }
   for (const name of Object.keys(env)) {
-    if (/private[_-]?key|mnemonic|seed[_-]?phrase|signing[_-]?key/i.test(name)) {
+    if (/(?:^|_)key$|private[_-]?key|mnemonic|seed[_-]?phrase|signing[_-]?key/i.test(name)) {
       throw new Error(`hisaishi Worker bindings contain key-shaped variable: ${name}`);
     }
   }

@@ -443,11 +443,15 @@ export function runContractSuite(
       expect(first.ok).toBe(true);
 
       let fetches = 0;
-      const original = harness.ports.fetchContent;
-      harness.ports.fetchContent = async (cid: string) => {
+      // Replace through the harness holder; the handle calls `ports.fetchContent`,
+      // which delegates to it. Patching `harness.ports.fetchContent` directly
+      // did nothing because the handle captured the original function (M2).
+      harness.setFetchContent(async (cid: string) => {
         fetches += 1;
-        return original(cid);
-      };
+        const bytes = contentFor('content').bytes;
+        void cid;
+        return bytes;
+      });
 
       const second = await handle.content('bafkreitest');
       expect(second.ok).toBe(true);

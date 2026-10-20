@@ -131,3 +131,63 @@ describe('HTTP transport', () => {
     expect(upstream.status).toBe(502);
   });
 });
+
+describe('RPC failure during confirm', () => {
+  it('maps an upstream RPC outage to 502 RPC_UNAVAILABLE, not 500', async () => {
+    // Found on the deployed Worker: the public Base Sepolia endpoint returned
+    // 429 and the gateway reported INTERNAL, which reads as a code defect.
+    const { app, harness } = makeApp();
+    const c = contentFor('rpc-down');
+    await app.request('/v1/memories', {
+      method: 'POST',
+      body: JSON.stringify({
+        owner: OWNER,
+        content: c.content,
+        contentHash: c.contentHash,
+        tags: [],
+      }),
+    });
+    await app.request('/v1/batches/build', {
+      method: 'POST',
+      body: JSON.stringify({ owner: OWNER }),
+    });
+
+    harness.rpc.getTransactionReceipt = async () => {
+      throw new Error('rpc returned 429');
+    };
+
+    const response = await app.request('/v1/batches/confirm', {
+      method: 'POST',
+      body: JSON.stringify({ owner: OWNER, txHash: TX_HASH }),
+    });
+    expect(response.status).toBe(502);
+    const body = (await response.json()) as { code: string };
+    expect(body.code).toBe('RPC_UNAVAILABLE');
+  });
+});
+
+describe('pin failure and D1 chunking', () => {
+  it('PIN_FAILED: a failing pin is 502 and writes nothing', async () => {
+    const { app, harness } = makeApp();
+    const c = contentFor('pin-down');
+    harness.pin.pin = async () => {
+      throw new Error('pinata 500');
+    };
+    const response = await app.request('/v1/memories', {
+      method: 'POST',
+      body: JSON.stringify({
+        owner: OWNER,
+        content: c.content,
+        contentHash: c.contentHash,
+        tags: [],
+      }),
+    });
+    expect(response.status).toBe(502);
+    expect((await response.json()) as { code: string }).toMatchObject({ code: 'PIN_FAILED' });
+
+    // Nothing staged: the gate refuses to leave a row without pinned bytes.
+    const list = await app.request(`/v1/memories?owner=${OWNER}`);
+    const body = (await list.json()) as { rows: unknown[] };
+    expect(body.rows).toEqual([]);
+  });
+});

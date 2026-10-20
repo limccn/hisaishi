@@ -44,8 +44,8 @@ export async function createWorkerHarness(): Promise<WorkerHarnessResult> {
 
   const ports: Ports = {
     ...memory.ports,
-    // `stage` consults the KV fast path first; keep the port surface identical
-    // by routing the dedup probe through the adapter's D1 lookup.
+    // The dedup key is mirrored into KV on write but no route reads it, so
+    // the port surface is the same as F1's; the D1 lookup is the only path.
     docStore: docStore satisfies DocStorePort,
     contentCache: new KvContentCache(kv),
   };

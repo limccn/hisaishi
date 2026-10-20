@@ -19,8 +19,10 @@ async function main(): Promise<void> {
   const { handle } = await createGateway({
     dbPath: env.HISAISHI_DB_PATH,
     rpcUrl: env.RPC_URL,
+    registryAddress: env.REGISTRY_ADDRESS,
     ipfsGateway: env.IPFS_GATEWAY,
     pinataJwt: env.PINATA_JWT,
+    devMode: env.DEV_MODE === 'true',
   });
 
   const app = createApp(handle);

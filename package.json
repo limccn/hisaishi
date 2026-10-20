@@ -22,7 +22,11 @@
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.test.json",
     "dev": "node --experimental-sqlite dist/local/serve.js",
-    "generate:abi": "node ../../scripts/export-abi.mjs"
+    "generate:abi": "node ../../scripts/export-abi.mjs",
+    "dev:worker": "wrangler dev",
+    "deploy": "pnpm build && wrangler deploy",
+    "test:e2e": "node scripts/e2e-worker.mjs",
+    "migrate:remote": "wrangler d1 migrations apply hisaishi-staging --remote"
   },
   "dependencies": {
     "@hono/node-server": "2.1.5",
