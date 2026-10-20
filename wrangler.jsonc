@@ -1,0 +1,43 @@
+/**
+ * F2 Worker configuration (design §2).
+ *
+ * Secrets are set with `wrangler secret put`, never written here:
+ *   PINATA_JWT    optional; without it the gateway uses the offline pin adapter
+ *   RPC_URL       required
+ *   IPFS_GATEWAY  required (dedicated gateway only — M1-9)
+ */
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "hisaishi",
+  "main": "dist/worker/index.js",
+  "compatibility_date": "2026-08-04",
+  "compatibility_flags": ["nodejs_compat"],
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "hisaishi-staging",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  "kv_namespaces": [
+    {
+      "binding": "KV_STAGING",
+      "id": "00000000000000000000000000000000"
+    },
+    {
+      "binding": "KV_EMB",
+      "id": "00000000000000000000000000000000"
+    }
+  ],
+
+  "vars": {
+    "IPFS_GATEWAY": ""
+  },
+
+  "observability": {
+    "enabled": true
+  }
+}

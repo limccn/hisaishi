@@ -7,5 +7,6 @@ export default defineConfig({
     // tests share a filesystem. Keep files sequential to avoid one test's
     // temp DB colliding with another's.
     fileParallelism: false,
+    setupFiles: ['./test/setup-wrangler-smoke.ts'],
   },
 });
