@@ -1,11 +1,11 @@
 /**
  * F2 storage adapters — D1 + KV.
  *
- * Same ports, same DDL, different backend. The only behavioural difference from
- * F1 is a KV fast path in front of the D1 lookup: KV and D1 are genuinely
- * different media, so a read that never touches D1 is worth having. The D1
- * composite PK remains the backstop, which is what makes the fast path safe to
- * lose or have go stale.
+ * Same ports, same DDL, different backend. The dedup key is mirrored into KV on
+ * every successful write, but **no request path reads it**: `DocStorePort` has
+ * no cid-only lookup, so `stage` always resolves dedup through the D1 composite
+ * PK. Earlier drafts claimed a KV fast read path; it did not exist, and the
+ * method implementing it was dead code.
  *
  * Keyless: nothing here (or in any binding) can hold a wallet key.
  */
@@ -96,7 +96,7 @@ function dedupKey(owner: string, contentHash: string): string {
 export class D1DocStore implements DocStorePort {
   constructor(
     private readonly db: D1Like,
-    /** Optional: lets the fast path short-circuit a D1 read. */
+    /** Optional mirror of the dedup key. Not read by any route today. */
     private readonly kv?: KVLike,
   ) {}
 
@@ -125,11 +125,9 @@ export class D1DocStore implements DocStorePort {
       .first<Row>();
     if (row === null) throw new Error('insertOrGet failed to read back a row');
 
-    // Populate the fast path only after the D1 write succeeded, so a failed
+    // Populate the dedup key only after the D1 write succeeded, so a failed
     // write cannot leave a KV entry pointing at a row that does not exist.
-    if (this.kv !== undefined) {
-      await this.kv.put(dedupKey(input.owner, input.contentHash), input.cid);
-    }
+    await this.rememberCid(input.owner, input.contentHash, row.cid);
     return toRecord(row);
   }
 
@@ -144,10 +142,19 @@ export class D1DocStore implements DocStorePort {
     return row === null ? null : toRecord(row);
   }
 
-  /** KV-backed cid lookup used by stage's dedup check. */
-  async findCidFast(owner: string, contentHash: string): Promise<string | null> {
-    if (this.kv === undefined) return null;
-    return this.kv.get(dedupKey(owner, contentHash));
+  /**
+   * Populate the dedup fast-path key.
+   *
+   * Called after a successful D1 write so KV can never point at a row that does
+   * not exist. Note there is **no read side yet**: `DocStorePort` has no method
+   * for a cid-only lookup, so `stage` always goes through D1. The key is
+   * written now so a future fast read does not have to backfill it — but it is
+   * not on any request path, and the README says so rather than claiming a
+   * shortcut that does not exist.
+   */
+  private async rememberCid(owner: string, contentHash: string, cid: string): Promise<void> {
+    if (this.kv === undefined) return;
+    await this.kv.put(dedupKey(owner, contentHash), cid);
   }
 
   async findByCid(cid: string): Promise<MemoryRecord | null> {
