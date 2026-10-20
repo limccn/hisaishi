@@ -153,6 +153,12 @@ A healthy Worker answers typed errors (`INVALID_HEX`, `INVALID_HASH`,
 `SCHEMA_VIOLATION`) with the matching status — never a stack trace and never a
 500. A 500 means the Worker threw before reaching the shared routes.
 
+> **Shell encoding trap.** Passing CJK content inline (`-d "{...}"`) can mangle
+> the bytes before curl ever sends them, producing a genuine-looking
+> `INVALID_HASH` from a correct Worker. Write the body to a file with a real
+> encoder and use `--data-binary @body.json`. The hash is computed over the
+> exact UTF-8 bytes; if the shell changes them, the gate is right to reject.
+
 ## Storage
 
 One SQLite file holds everything:
