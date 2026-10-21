@@ -7,7 +7,7 @@
  * meaningful.
  */
 
-import { commitmentHash, tagToBytes32, ZERO_BYTES32, type Commitment } from '@limccn/menhir-core';
+import { tagToBytes32, ZERO_BYTES32, cidDigest, type Commitment } from '@limccn/menhir-core';
 
 import type {
   BatchPayload,
@@ -16,9 +16,32 @@ import type {
   Ports,
 } from './contract.js';
 import { GatewayError } from './errors.js';
-import { verifyContent } from './integrity.js';
+import { verifyContent, type VerifiedContent } from './integrity.js';
+import { MAX_CONTENT_BYTES } from './limits.js';
 
 const MAX_BATCH = 64;
+const CAPABILITY_PATTERN = /^[0-9a-fA-F]{32}$/;
+const PIN_CLOCK_SKEW_MS = 5 * 60 * 1000;
+
+/**
+ * Opportunistic retention sweep. At most once per `sweepIntervalMs` per
+ * process; housekeeping must never fail a build.
+ */
+let lastSweepAt = 0;
+async function maybeSweep(ports: Ports, now: number): Promise<void> {
+  if (now - lastSweepAt < ports.settings.sweepIntervalMs) return;
+  lastSweepAt = now;
+  try {
+    await ports.docStore.deleteExpired({
+      stagedBefore: now - ports.settings.stagingTtlMs,
+      rejectedBefore: now - ports.settings.rejectedTtlMs,
+      pinsBefore: now - ports.settings.pinTtlMs,
+      now,
+    });
+  } catch {
+    // Housekeeping must not fail the request.
+  }
+}
 
 /** `signer` placeholder — longstone stamps the real delegation key (R2). */
 const ZERO_ADDRESS = `0x${'0'.repeat(40)}` as `0x${string}`;
@@ -34,20 +57,51 @@ function toRow(record: MemoryRecord): MemoryRow {
     batchId: record.batchId,
     txHash: record.txHash,
     createdAt: record.createdAt,
-    // Derived from the *placeholder* struct (R13). It is a lookup aid; the
-    // authoritative hash is the one longstone computes after stamping.
-    commitmentHash: record.batchJson === null
-      ? null
-      : commitmentHashOfFirst(record.batchJson, record.contentHash),
+    // Real value from the registry event, set by confirm; null before that.
+    // The gateway never derives a hash from unsigned placeholder structs.
+    commitmentHash: record.commitmentHash,
   };
 }
 
-function commitmentHashOfFirst(batch: BatchPayload, contentHash: `0x${string}`): `0x${string}` {
-  const index = batch.commitments.findIndex(
-    (c) => c.contentHash.toLowerCase() === contentHash.toLowerCase(),
+/**
+ * The one row state that scopes staging: sha256(deploymentId + ':' + capability).
+ * Folding the deployment in keeps shared D1/KV and blue/green deployments
+ * mutually invisible without another column.
+ */
+function hashCapability(ports: Ports, capability: string): `0x${string}` {
+  const token = assertCapability(capability);
+  return cidDigest(
+    new TextEncoder().encode(`${ports.settings.deploymentId}:${token}`),
+  ) as `0x${string}`;
+}
+
+function assertCapability(value: unknown): string {
+  if (typeof value !== 'string' || value === '') {
+    throw new GatewayError('CAPABILITY_REQUIRED', 'capability is required');
+  }
+  if (!CAPABILITY_PATTERN.test(value)) {
+    throw new GatewayError(
+      'INVALID_CAPABILITY',
+      'capability must be 32 hex characters (128 bits)',
+    );
+  }
+  return value.toLowerCase();
+}
+
+function pinIsValid(
+  pin: { cidDigest: string; contentHash: string; cid: string; pinnedAt: number },
+  verified: VerifiedContent,
+  now: number,
+  ttlMs: number,
+): boolean {
+  return (
+    pin.cidDigest.toLowerCase() === verified.cidDigest.toLowerCase() &&
+    pin.contentHash.toLowerCase() === verified.contentHash.toLowerCase() &&
+    /^[a-zA-Z0-9]+$/.test(pin.cid) &&
+    pin.cid.length <= 128 &&
+    pin.pinnedAt <= now + PIN_CLOCK_SKEW_MS &&
+    pin.pinnedAt >= now - ttlMs
   );
-  if (index < 0) return ZERO_BYTES32;
-  return commitmentHash(batch.commitments[index]!);
 }
 
 export interface StageRequest {
@@ -55,6 +109,8 @@ export interface StageRequest {
   content: unknown;
   contentHash: string;
   tags: string[];
+  /** Client-generated 128-bit session token; opaque to the gateway. */
+  capability: string;
 }
 
 export interface StageResponse {
@@ -70,39 +126,82 @@ export interface StageResponse {
  * the pin leaves nothing behind, which the suite asserts by counting pin calls.
  */
 export async function stage(ports: Ports, req: StageRequest): Promise<StageResponse> {
+  // Validate the session token before any expensive work; a missing capability
+  // is a caller error, not an anonymous staging request.
+  const capabilityHash = hashCapability(ports, req.capability);
   const verified = verifyContent({
     content: req.content,
     contentHash: req.contentHash,
     tags: req.tags,
   });
   const owner = assertAddress(req.owner);
+  const now = ports.now();
 
   const existing = await ports.docStore.findByOwnerAndHash(owner, verified.contentHash);
   if (existing !== null) {
-    if (existing.status === 'rejected') {
-      // R5: a reverted batch must not make the content permanently unusable.
-      await ports.docStore.reopenRejected(owner, verified.contentHash);
-      return { cid: existing.cid, cidDigest: verified.cidDigest, status: 'staged' };
+    switch (existing.status) {
+      case 'anchored':
+        return { cid: existing.cid, cidDigest: verified.cidDigest, status: 'anchored' };
+      case 'staged':
+        // Last stager wins. Without this, a known-content pre-stage could deny
+        // the real author permanently (design §2.1).
+        await ports.docStore.bindStaged(owner, verified.contentHash, capabilityHash);
+        return { cid: existing.cid, cidDigest: verified.cidDigest, status: 'staged' };
+      case 'rejected':
+        // R5: a reverted batch must not make the content permanently unusable.
+        await ports.docStore.reopenRejected(owner, verified.contentHash, capabilityHash);
+        return { cid: existing.cid, cidDigest: verified.cidDigest, status: 'staged' };
+      case 'batched': {
+        const reclaimed = await ports.docStore.reclaimBatched(
+          owner,
+          verified.contentHash,
+          capabilityHash,
+          now - ports.settings.batchTtlMs,
+        );
+        // A fresh batch belongs to another session; report the truth and let
+        // the caller retry after the TTL.
+        return {
+          cid: existing.cid,
+          cidDigest: verified.cidDigest,
+          status: reclaimed ? 'staged' : 'batched',
+        };
+      }
     }
-    // Return the row's ACTUAL status — claiming 'staged' for an anchored row
-    // would misreport on-chain state to the caller.
-    return { cid: existing.cid, cidDigest: verified.cidDigest, status: existing.status };
   }
 
-  let pinned: { cid: string };
-  try {
-    pinned = await ports.pin.pin(verified.bytes);
-  } catch (error) {
-    throw new GatewayError('PIN_FAILED', (error as Error).message);
+  // Global pin ledger: identical bytes under different owners upload once.
+  // A hit is re-validated; the ledger is never a correctness assumption.
+  let pinnedCid: string;
+  const ledger = await ports.docStore.findPin(verified.cidDigest);
+  if (ledger !== null && pinIsValid(ledger, verified, now, ports.settings.pinTtlMs)) {
+    pinnedCid = ledger.cid;
+  } else {
+    try {
+      pinnedCid = (await ports.pin.pin(verified.bytes)).cid;
+    } catch (error) {
+      throw new GatewayError('PIN_FAILED', (error as Error).message);
+    }
+    try {
+      await ports.docStore.recordPin({
+        cidDigest: verified.cidDigest,
+        contentHash: verified.contentHash,
+        cid: pinnedCid,
+        pinnedAt: now,
+      });
+    } catch {
+      // The ledger is an optimisation and an accounting aid; a failed write
+      // must not turn a successful pin into a 500.
+    }
   }
 
   const record = await ports.docStore.insertOrGet({
     owner,
     contentHash: verified.contentHash,
     cidDigest: verified.cidDigest,
-    cid: pinned.cid,
+    cid: pinnedCid,
     tags: req.tags,
-    now: ports.now(),
+    now,
+    capabilityHash,
   });
 
   return { cid: record.cid, cidDigest: record.cidDigest, status: record.status };
@@ -110,9 +209,8 @@ export async function stage(ports: Ports, req: StageRequest): Promise<StageRespo
 
 export interface BuildRequest {
   owner: string;
-  // Omitted = "use the default". Present-but-invalid is a 413, which is why
-  // absence and `undefined` must stay distinguishable at the route boundary.
-  limit?: unknown;
+  /** The staging session; only its rows are selectable. */
+  capability: string;
 }
 
 export interface BuildResponse {
@@ -124,16 +222,24 @@ export interface BuildResponse {
 /**
  * POST /v1/batches/build.
  *
- * `limit` absent → 64. Present must be an integer 1..64 (else 413). Fewer staged
- * rows than `limit` is normal, not an error.
+ * Selects only rows staged under the presented capability. A same-capability
+ * stale batch is reclaimed first; rows under any other capability (or another
+ * deployment sharing this database) are invisible.
  */
 export async function build(ports: Ports, req: BuildRequest): Promise<BuildResponse> {
   const owner = assertAddress(req.owner);
-  const limit = parseLimit(req.limit);
+  const capabilityHash = hashCapability(ports, req.capability);
+  const now = ports.now();
 
-  const staged = await ports.docStore.selectStaged(owner, limit);
+  await maybeSweep(ports, now);
+  await ports.docStore.reclaimStaleBatched(
+    owner,
+    capabilityHash,
+    now - ports.settings.batchTtlMs,
+  );
+  const staged = await ports.docStore.selectStaged(owner, capabilityHash, MAX_BATCH);
   if (staged.length === 0) {
-    throw new GatewayError('NO_STAGED', `no staged memories for ${owner}`);
+    throw new GatewayError('NO_STAGED', `no staged memories for this capability and ${owner}`);
   }
 
   // Placeholders (R2): prev, blockHeight and signer are all zero. longstone
@@ -149,13 +255,14 @@ export async function build(ports: Ports, req: BuildRequest): Promise<BuildRespo
     prev: ZERO_BYTES32,
   }));
   const tagLists = staged.map((row) => row.tags.map(tagToBytes32Hex));
-  const batchId = uuidv7(ports.now());
+  const batchId = uuidv7(now);
 
   await ports.docStore.markBatched(
     owner,
     staged.map((r) => r.contentHash),
     batchId,
     { commitments, tagLists },
+    now,
   );
 
   return { batchId, commitments, tagLists };
@@ -213,10 +320,24 @@ export async function confirm(ports: Ports, req: ConfirmRequest): Promise<Confir
     throw new GatewayError('UNKNOWN_TX', 'no batched rows match this receipt');
   }
 
-  const hashes = batched.map((r) => r.contentHash);
+  // Store the REAL commitment hash from the event for each settled row. It is
+  // a lookup candidate for clients, never a proof; if a receipt contains two
+  // commits for the same contentHash, the last one wins deterministically.
+  const batchedHashes = new Set(batched.map((row) => row.contentHash.toLowerCase()));
+  const byContentHash = new Map<string, `0x${string}`>();
+  for (const commit of receipt.commits) {
+    if (commit.owner.toLowerCase() !== owner.toLowerCase()) continue;
+    if (!batchedHashes.has(commit.contentHash.toLowerCase())) continue;
+    byContentHash.set(commit.contentHash.toLowerCase(), commit.commitmentHash);
+  }
+  const commits = [...byContentHash.entries()].map(([contentHash, commitmentHash]) => ({
+    contentHash: contentHash as `0x${string}`,
+    commitmentHash,
+  }));
+
   const settled = await ports.docStore.markSettled(
     owner,
-    hashes,
+    commits,
     receipt.status === 'success' ? 'anchored' : 'rejected',
     txHash,
   );
@@ -243,20 +364,37 @@ export async function list(ports: Ports, req: ListRequest): Promise<MemoryRow[]>
 /**
  * GET /v1/content.
  *
- * Cache hit → bytes. Miss → dedicated-gateway fetch, cache it, return.
- * A 404 upstream is `CONTENT_NOT_FOUND`; transport/5xx is `GATEWAY_UPSTREAM`.
- * Collapsing them would make an outage look like permanent data loss.
+ * Membership → cache → fetch → digest check → cache. The gateway is not an
+ * open IPFS proxy: it only serves CIDs it has a row for, caps the upstream
+ * response, and verifies the fetched bytes against the row's digest before
+ * caching. A 404 upstream is `CONTENT_NOT_FOUND`; transport/5xx is
+ * `GATEWAY_UPSTREAM`.
  */
+
 export async function content(ports: Ports, cid: string): Promise<Uint8Array> {
+  // Membership before any upstream work: an unknown CID must cost nothing.
+  const row = await ports.docStore.findByCid(cid);
+  if (row === null) {
+    throw new GatewayError('CONTENT_NOT_FOUND', `${cid} is not staged or pinned`);
+  }
+
   const key = `content:${cid}`;
   const cached = await ports.contentCache.get(key);
-  if (cached !== null) return cached;
+  if (cached !== null) {
+    // Old cache entries predate the digest check; re-verify before trusting.
+    if (cached.byteLength <= MAX_CONTENT_BYTES && cidDigest(cached) === row.cidDigest) {
+      return cached;
+    }
+  }
 
   let bytes: Uint8Array;
   try {
     bytes = await ports.fetchContent(cid);
   } catch (error) {
-    const flags = error as { notFound?: boolean; invalidCid?: boolean } | null;
+    const flags = error as { notFound?: boolean; invalidCid?: boolean; tooLarge?: boolean } | null;
+    if (flags?.tooLarge === true) {
+      throw new GatewayError('CONTENT_TOO_LARGE', `upstream content exceeds ${MAX_CONTENT_BYTES} bytes`);
+    }
     // Three distinct facts, three distinct codes: absent vs malformed vs down.
     if (flags?.invalidCid === true) {
       // A CID the gateway cannot parse is malformed input, not a hash mismatch.
@@ -267,6 +405,18 @@ export async function content(ports: Ports, cid: string): Promise<Uint8Array> {
       flags?.notFound === true ? 'CONTENT_NOT_FOUND' : 'GATEWAY_UPSTREAM',
       (error as Error).message,
     );
+  }
+
+  if (bytes.byteLength > MAX_CONTENT_BYTES) {
+    throw new GatewayError(
+      'CONTENT_TOO_LARGE',
+      `upstream content exceeds ${MAX_CONTENT_BYTES} bytes`,
+    );
+  }
+  if (cidDigest(bytes) !== row.cidDigest) {
+    // The upstream served different bytes than the row commits to. Do not
+    // cache them: a substituted object must not become the gateway's answer.
+    throw new GatewayError('GATEWAY_UPSTREAM', `bytes for ${cid} do not match the row digest`);
   }
 
   try {
@@ -326,14 +476,6 @@ function assertTxHash(value: string): `0x${string}` {
     throw new GatewayError('INVALID_HEX', 'txHash must be 32-byte hex');
   }
   return value as `0x${string}`;
-}
-
-function parseLimit(value: unknown): number {
-  if (value === undefined) return MAX_BATCH;
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > MAX_BATCH) {
-    throw new GatewayError('INVALID_BATCH_SIZE', `limit must be an integer 1..${MAX_BATCH}`);
-  }
-  return value;
 }
 
 function parseListLimit(value: unknown): number {

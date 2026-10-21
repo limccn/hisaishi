@@ -10,7 +10,7 @@ import type { D1Like, KVLike } from './adapters.js';
 
 export interface Bindings {
   DB: D1Like;
-  /** dedup:{owner}:{contentHash} → cid, plus content:{cid} bytes. */
+  /** Content cache (`content:{cid}` bytes). The old dedup mirror is gone. */
   KV_HISAISHI_STAGING: KVLike;
   /**
    * Reserved for M2 embedding sync. Optional and unbound in M1: nothing reads
@@ -22,6 +22,12 @@ export interface Bindings {
   IPFS_GATEWAY: string;
   PINATA_JWT: string | undefined;
   DEV_MODE: string | undefined;
+  /** Required: part of the capability hash; unique per logical deployment. */
+  HISAISHI_DEPLOYMENT_ID: string;
+  /** Comma-separated browser origins; loopback is always allowed. */
+  HISAISHI_ALLOWED_ORIGINS: string | undefined;
+  /** Explicit wildcard opt-in; unsafe outside local development. */
+  HISAISHI_ALLOW_ANY_ORIGIN: string | undefined;
 }
 
 const FORBIDDEN_BINDING_NAMES = [

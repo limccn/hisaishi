@@ -21,6 +21,9 @@ import type { StageRequest } from '../src/core/routes.js';
 export const OWNER = `0x${'11'.repeat(20)}` as const;
 export const OTHER_OWNER = `0x${'22'.repeat(20)}` as const;
 export const TX_HASH = `0x${'ab'.repeat(32)}` as const;
+export const CAPABILITY = 'ab'.repeat(16);
+export const CAPABILITY_B = 'cd'.repeat(16);
+export const COMMITMENT = `0x${'cd'.repeat(32)}` as const;
 
 export function contentFor(text: string, meta?: Record<string, unknown>) {
   // The cast is deliberate: callers pass loosely-typed fixture data on purpose,
@@ -80,6 +83,7 @@ export function runContractSuite(
         owner: req.owner ?? OWNER,
         content: c.content,
         contentHash: c.contentHash,
+        capability: CAPABILITY,
         tags: req.tags ?? [],
       });
       expect(result.ok, JSON.stringify(result)).toBe(true);
@@ -94,6 +98,7 @@ export function runContractSuite(
         owner: OWNER,
         content: c.content,
         contentHash: c.contentHash,
+        capability: CAPABILITY,
         tags: ['layer:deep'],
       });
       expect(result.ok).toBe(true);
@@ -111,6 +116,7 @@ export function runContractSuite(
         owner: OWNER,
         content: c.content,
         contentHash: `0x${'00'.repeat(32)}`,
+        capability: CAPABILITY,
         tags: [],
       });
 
@@ -131,6 +137,7 @@ export function runContractSuite(
         owner: OWNER,
         content: c.content,
         contentHash: c.contentHash,
+        capability: CAPABILITY,
         tags: [],
       });
       const pinsAfterFirst = harness.pin.calls;
@@ -139,6 +146,7 @@ export function runContractSuite(
         owner: OWNER,
         content: c.content,
         contentHash: c.contentHash,
+        capability: CAPABILITY,
         tags: [],
       });
 
@@ -154,12 +162,14 @@ export function runContractSuite(
         owner: OWNER,
         content: c.content,
         contentHash: c.contentHash,
+        capability: CAPABILITY,
         tags: [],
       });
       const b = await handle.stage({
         owner: OTHER_OWNER,
         content: c.content,
         contentHash: c.contentHash,
+        capability: CAPABILITY,
         tags: [],
       });
       expect(a.ok && b.ok).toBe(true);
@@ -168,7 +178,7 @@ export function runContractSuite(
 
       // Both must be buildable — the v0.2 `cid` PK silently dropped the second
       // owner's row, so this is the regression that matters.
-      const buildB = await handle.build({ owner: OTHER_OWNER });
+      const buildB = await handle.build({ owner: OTHER_OWNER, capability: CAPABILITY });
       expect(buildB.ok).toBe(true);
     });
 
@@ -181,6 +191,7 @@ export function runContractSuite(
         owner: OWNER,
         content: nfd,
         contentHash: `0x${'44'.repeat(32)}`,
+        capability: CAPABILITY,
         tags: [],
       });
       expect(nfdResult.ok).toBe(false);
@@ -194,6 +205,7 @@ export function runContractSuite(
         owner: OWNER,
         content: unknown,
         contentHash: `0x${'55'.repeat(32)}`,
+        capability: CAPABILITY,
         tags: [],
       });
       expect(unknownResult.ok).toBe(false);
@@ -204,6 +216,7 @@ export function runContractSuite(
         owner: OWNER,
         content: c.content,
         contentHash: c.contentHash,
+        capability: CAPABILITY,
         tags: ['x'.repeat(33)],
       });
       expect(longTag.ok).toBe(false);
@@ -216,7 +229,7 @@ export function runContractSuite(
       await stageOk({ text: 'one' });
       await stageOk({ text: 'two' });
 
-      const result = await handle.build({ owner: OWNER });
+      const result = await handle.build({ owner: OWNER, capability: CAPABILITY });
       expect(result.ok).toBe(true);
       if (!result.ok) return;
       expect(result.value.commitments).toHaveLength(2);
@@ -235,23 +248,29 @@ export function runContractSuite(
       expect(rows[0]!.batchId).toBe(result.value.batchId);
     });
 
-    it('build: limit absent → 64, 0/negative/fractional/oversized → 413', async () => {
-      await stageOk({ text: 'limit' });
-      for (const bad of [0, -1, 1.5, 65]) {
-        const result = await handle.build({ owner: OWNER, limit: bad });
-        expect(result.ok, `limit ${bad}`).toBe(false);
-        if (!result.ok) {
-          expect(result.status, `limit ${bad}`).toBe(413);
-          expect(result.error.code).toBe('INVALID_BATCH_SIZE');
-        }
-      }
-      // Fewer staged rows than the limit is normal, not an error.
-      const ok = await handle.build({ owner: OWNER, limit: 64 });
+    it('build requires the capability; another capability is invisible', async () => {
+      await stageOk({ text: 'capability' });
+
+      // Missing and malformed tokens are typed 400s, never an owner-wide build.
+      const missing = await handle.build({ owner: OWNER, capability: '' });
+      expect(missing.ok).toBe(false);
+      if (!missing.ok) expect(missing.error.code).toBe('CAPABILITY_REQUIRED');
+
+      const invalid = await handle.build({ owner: OWNER, capability: 'zz' });
+      expect(invalid.ok).toBe(false);
+      if (!invalid.ok) expect(invalid.error.code).toBe('INVALID_CAPABILITY');
+
+      // Same owner, different session: the row is invisible.
+      const other = await handle.build({ owner: OWNER, capability: CAPABILITY_B });
+      expect(other.ok).toBe(false);
+      if (!other.ok) expect(other.error.code).toBe('NO_STAGED');
+
+      const ok = await handle.build({ owner: OWNER, capability: CAPABILITY });
       expect(ok.ok).toBe(true);
     });
 
     it('build with zero staged rows → 409 NO_STAGED', async () => {
-      const result = await handle.build({ owner: OWNER });
+      const result = await handle.build({ owner: OWNER, capability: CAPABILITY });
       expect(result.ok).toBe(false);
       if (!result.ok) {
         expect(result.status).toBe(409);
@@ -261,16 +280,16 @@ export function runContractSuite(
 
     it('R8: batched rows never re-enter a later build (batches are disjoint)', async () => {
       await stageOk({ text: 'first' });
-      const b1 = await handle.build({ owner: OWNER });
+      const b1 = await handle.build({ owner: OWNER, capability: CAPABILITY });
       expect(b1.ok).toBe(true);
 
       // A second build with nothing new staged must not re-select the batched row.
-      const b2 = await handle.build({ owner: OWNER });
+      const b2 = await handle.build({ owner: OWNER, capability: CAPABILITY });
       expect(b2.ok).toBe(false);
       if (!b2.ok) expect(b2.error.code).toBe('NO_STAGED');
 
       await stageOk({ text: 'second' });
-      const b3 = await handle.build({ owner: OWNER });
+      const b3 = await handle.build({ owner: OWNER, capability: CAPABILITY });
       expect(b3.ok).toBe(true);
       if (!b3.ok || !b1.ok) return;
       const hashes1 = new Set(b1.value.commitments.map((c) => c.contentHash));
@@ -283,7 +302,7 @@ export function runContractSuite(
 
     it('confirm: exactly one receipt call, pending → 202 with no write', async () => {
       await stageOk({ text: 'pending' });
-      await handle.build({ owner: OWNER });
+      await handle.build({ owner: OWNER, capability: CAPABILITY });
       const callsBefore = harness.rpc.calls;
 
       const result = await handle.confirm({ owner: OWNER, txHash: TX_HASH });
@@ -300,11 +319,11 @@ export function runContractSuite(
 
     it('confirm success anchors only this owner’s matching rows', async () => {
       const c = await stageOk({ text: 'anchor' });
-      await handle.build({ owner: OWNER });
+      await handle.build({ owner: OWNER, capability: CAPABILITY });
 
       harness.rpc.setReceipt(TX_HASH, {
         status: 'success',
-        commits: [{ owner: OWNER, contentHash: c.contentHash }],
+        commits: [{ owner: OWNER, contentHash: c.contentHash, commitmentHash: COMMITMENT }],
       });
 
       const result = await handle.confirm({ owner: OWNER, txHash: TX_HASH });
@@ -321,10 +340,10 @@ export function runContractSuite(
 
     it('R7: a reverted receipt reports status rejected, not a zero count', async () => {
       const c = await stageOk({ text: 'revert' });
-      await handle.build({ owner: OWNER });
+      await handle.build({ owner: OWNER, capability: CAPABILITY });
       harness.rpc.setReceipt(TX_HASH, {
         status: 'reverted',
-        commits: [{ owner: OWNER, contentHash: c.contentHash }],
+        commits: [{ owner: OWNER, contentHash: c.contentHash, commitmentHash: COMMITMENT }],
       });
 
       const result = await handle.confirm({ owner: OWNER, txHash: TX_HASH });
@@ -340,10 +359,10 @@ export function runContractSuite(
 
     it('R5: a rejected row is re-opened by re-staging the same content', async () => {
       const c = await stageOk({ text: 'reopen' });
-      await handle.build({ owner: OWNER });
+      await handle.build({ owner: OWNER, capability: CAPABILITY });
       harness.rpc.setReceipt(TX_HASH, {
         status: 'reverted',
-        commits: [{ owner: OWNER, contentHash: c.contentHash }],
+        commits: [{ owner: OWNER, contentHash: c.contentHash, commitmentHash: COMMITMENT }],
       });
       await handle.confirm({ owner: OWNER, txHash: TX_HASH });
 
@@ -351,6 +370,7 @@ export function runContractSuite(
         owner: OWNER,
         content: c.content,
         contentHash: c.contentHash,
+        capability: CAPABILITY,
         tags: [],
       });
       expect(restaged.ok).toBe(true);
@@ -364,10 +384,10 @@ export function runContractSuite(
 
     it('R3: a receipt with no commits for this owner → UNKNOWN_TX, no flip', async () => {
       await stageOk({ text: 'unknown' });
-      await handle.build({ owner: OWNER });
+      await handle.build({ owner: OWNER, capability: CAPABILITY });
       harness.rpc.setReceipt(TX_HASH, {
         status: 'success',
-        commits: [{ owner: OTHER_OWNER, contentHash: `0x${'33'.repeat(32)}` }],
+        commits: [{ owner: OTHER_OWNER, contentHash: `0x${'33'.repeat(32)}`, commitmentHash: COMMITMENT }],
       });
 
       const result = await handle.confirm({ owner: OWNER, txHash: TX_HASH });
@@ -380,10 +400,10 @@ export function runContractSuite(
 
     it('confirm is idempotent: a second call flips nothing', async () => {
       const c = await stageOk({ text: 'idem' });
-      await handle.build({ owner: OWNER });
+      await handle.build({ owner: OWNER, capability: CAPABILITY });
       harness.rpc.setReceipt(TX_HASH, {
         status: 'success',
-        commits: [{ owner: OWNER, contentHash: c.contentHash }],
+        commits: [{ owner: OWNER, contentHash: c.contentHash, commitmentHash: COMMITMENT }],
       });
       await handle.confirm({ owner: OWNER, txHash: TX_HASH });
 
@@ -427,14 +447,26 @@ export function runContractSuite(
       expect(listed.value[0]!.owner).toBe(lower.toLowerCase());
     });
 
-    it('list exposes a derived commitmentHash once batched', async () => {
-      await stageOk({ text: 'batched-row' });
-      await handle.build({ owner: OWNER });
-      const result = await handle.list({ owner: OWNER });
-      expect(result.ok).toBe(true);
-      if (!result.ok) return;
-      expect(result.value[0]!.commitmentHash).toMatch(/^0x[0-9a-f]{64}$/);
-      expect(result.value[0]!.batchId).not.toBeNull();
+    it('list commitmentHash is null until confirm, then the event value', async () => {
+      const c = await stageOk({ text: 'batched-row' });
+      await handle.build({ owner: OWNER, capability: CAPABILITY });
+
+      const before = await handle.list({ owner: OWNER });
+      expect(before.ok).toBe(true);
+      if (!before.ok) return;
+      expect(before.value[0]!.commitmentHash).toBeNull();
+      expect(before.value[0]!.batchId).not.toBeNull();
+
+      harness.rpc.setReceipt(TX_HASH, {
+        status: 'success',
+        commits: [{ owner: OWNER, contentHash: c.contentHash, commitmentHash: COMMITMENT }],
+      });
+      await handle.confirm({ owner: OWNER, txHash: TX_HASH });
+
+      const after = await handle.list({ owner: OWNER, status: 'anchored' });
+      expect(after.ok).toBe(true);
+      if (!after.ok) return;
+      expect(after.value[0]!.commitmentHash).toBe(COMMITMENT);
     });
 
     it('list: owner required, invalid status rejected, limit bounded', async () => {
@@ -453,43 +485,80 @@ export function runContractSuite(
 
     it('content: cache miss fetches, cache hit does not refetch', async () => {
       const c = contentFor('content');
-      harness.setContent('bafkreitest', c.bytes);
+      // Stage through the handle so the row lands in THIS harness's store
+      // (memory / SQLite / D1), not in the suite's in-memory double.
+      const staged = await handle.stage({
+        owner: OWNER,
+        content: c.content,
+        contentHash: c.contentHash,
+        tags: [],
+        capability: CAPABILITY,
+      });
+      expect(staged.ok).toBe(true);
+      if (!staged.ok) return;
+      const cid = staged.value.cid;
+      harness.setContent(cid, c.bytes);
 
-      const first = await handle.content('bafkreitest');
+      const first = await handle.content(cid);
       expect(first.ok).toBe(true);
 
       let fetches = 0;
       // Replace through the harness holder; the handle calls `ports.fetchContent`,
       // which delegates to it. Patching `harness.ports.fetchContent` directly
       // did nothing because the handle captured the original function (M2).
-      harness.setFetchContent(async (cid: string) => {
+      harness.setFetchContent(async (requested: string) => {
         fetches += 1;
-        const bytes = contentFor('content').bytes;
-        void cid;
-        return bytes;
+        void requested;
+        return c.bytes;
       });
 
-      const second = await handle.content('bafkreitest');
+      const second = await handle.content(cid);
       expect(second.ok).toBe(true);
       expect(fetches).toBe(0);
     });
 
     it('R6: content 404 → CONTENT_NOT_FOUND; upstream failure → GATEWAY_UPSTREAM', async () => {
-      harness.setFetchFailure('bafkreimissing', 'notFound');
-      const missing = await handle.content('bafkreimissing');
+      const missingContent = contentFor('missing-content');
+      const missingStaged = await handle.stage({
+        owner: OWNER,
+        content: missingContent.content,
+        contentHash: missingContent.contentHash,
+        tags: [],
+        capability: CAPABILITY,
+      });
+      expect(missingStaged.ok).toBe(true);
+      if (!missingStaged.ok) return;
+      harness.setFetchFailure(missingStaged.value.cid, 'notFound');
+      const missing = await handle.content(missingStaged.value.cid);
       expect(missing.ok).toBe(false);
       if (!missing.ok) {
         expect(missing.status).toBe(404);
         expect(missing.error.code).toBe('CONTENT_NOT_FOUND');
       }
 
-      harness.setFetchFailure('bafkreiupstream', 'upstream');
-      const upstream = await handle.content('bafkreiupstream');
+      const upstreamContent = contentFor('upstream-content');
+      const upstreamStaged = await handle.stage({
+        owner: OWNER,
+        content: upstreamContent.content,
+        contentHash: upstreamContent.contentHash,
+        tags: [],
+        capability: CAPABILITY,
+      });
+      expect(upstreamStaged.ok).toBe(true);
+      if (!upstreamStaged.ok) return;
+      harness.setFetchFailure(upstreamStaged.value.cid, 'upstream');
+      const upstream = await handle.content(upstreamStaged.value.cid);
       expect(upstream.ok).toBe(false);
       if (!upstream.ok) {
         expect(upstream.status).toBe(502);
         expect(upstream.error.code).toBe('GATEWAY_UPSTREAM');
       }
+
+      // A CID with no row is rejected before any upstream call.
+      harness.setFetchFailure('bafkreiunknown', 'upstream');
+      const unknown = await handle.content('bafkreiunknown');
+      expect(unknown.ok).toBe(false);
+      if (!unknown.ok) expect(unknown.error.code).toBe('CONTENT_NOT_FOUND');
     });
 
     // --------------------------------------------------------- keyless audit
@@ -499,6 +568,137 @@ export function runContractSuite(
       for (const name of names) {
         expect(name).not.toMatch(/sign|key|account/i);
       }
+    });
+
+    // ------------------------------------------------- capability lifecycle
+
+    it('re-staging a staged row re-binds it to the new capability', async () => {
+      const c = await stageOk({ text: 'rebind' });
+      const restaged = await handle.stage({
+        owner: OWNER,
+        content: c.content,
+        contentHash: c.contentHash,
+        tags: [],
+        capability: CAPABILITY_B,
+      });
+      expect(restaged.ok).toBe(true);
+      if (restaged.ok) expect(restaged.value.status).toBe('staged');
+
+      const oldSession = await handle.build({ owner: OWNER, capability: CAPABILITY });
+      expect(oldSession.ok).toBe(false);
+      const newSession = await handle.build({ owner: OWNER, capability: CAPABILITY_B });
+      expect(newSession.ok).toBe(true);
+    });
+
+    it('identical bytes under two owners pin once', async () => {
+      const c = contentFor('pin-dedup');
+      const pinsBefore = harness.pin.calls;
+      const a = await handle.stage({
+        owner: OWNER,
+        content: c.content,
+        contentHash: c.contentHash,
+        tags: [],
+        capability: CAPABILITY,
+      });
+      const b = await handle.stage({
+        owner: OTHER_OWNER,
+        content: c.content,
+        contentHash: c.contentHash,
+        tags: [],
+        capability: CAPABILITY_B,
+      });
+      expect(a.ok && b.ok).toBe(true);
+      expect(harness.pin.calls - pinsBefore).toBe(1);
+    });
+
+    it('reclaims a same-capability stale batch on build', async () => {
+      await stageOk({ text: 'reclaim-build' });
+      const first = await handle.build({ owner: OWNER, capability: CAPABILITY });
+      expect(first.ok).toBe(true);
+
+      harness.ports.settings.batchTtlMs = 0;
+      try {
+        const second = await handle.build({ owner: OWNER, capability: CAPABILITY });
+        expect(second.ok).toBe(true);
+      } finally {
+        harness.ports.settings.batchTtlMs = 15 * 60 * 1000;
+      }
+    });
+
+    it('a new capability reclaims a stale batch on stage', async () => {
+      const c = await stageOk({ text: 'reclaim-stage' });
+      await handle.build({ owner: OWNER, capability: CAPABILITY });
+
+      harness.ports.settings.batchTtlMs = 0;
+      try {
+        const restaged = await handle.stage({
+          owner: OWNER,
+          content: c.content,
+          contentHash: c.contentHash,
+          tags: [],
+          capability: CAPABILITY_B,
+        });
+        expect(restaged.ok).toBe(true);
+        if (restaged.ok) expect(restaged.value.status).toBe('staged');
+
+        const built = await handle.build({ owner: OWNER, capability: CAPABILITY_B });
+        expect(built.ok).toBe(true);
+      } finally {
+        harness.ports.settings.batchTtlMs = 15 * 60 * 1000;
+      }
+    });
+
+    it('rejects non-string tags and more than 16 tags without pinning', async () => {
+      const c = contentFor('tag-limits');
+      const pinsBefore = harness.pin.calls;
+      const nonString = await handle.stage({
+        owner: OWNER,
+        content: c.content,
+        contentHash: c.contentHash,
+        tags: [1 as never],
+        capability: CAPABILITY,
+      });
+      expect(nonString.ok).toBe(false);
+      if (!nonString.ok) expect(nonString.error.code).toBe('SCHEMA_VIOLATION');
+
+      const tooMany = await handle.stage({
+        owner: OWNER,
+        content: c.content,
+        contentHash: c.contentHash,
+        tags: Array.from({ length: 17 }, (_, i) => `t${i}`),
+        capability: CAPABILITY,
+      });
+      expect(tooMany.ok).toBe(false);
+      if (!tooMany.ok) expect(tooMany.error.code).toBe('SCHEMA_VIOLATION');
+      expect(harness.pin.calls).toBe(pinsBefore);
+    });
+
+    it('rejects oversized text with CONTENT_TOO_LARGE without pinning', async () => {
+      const c = contentFor('x'.repeat(8 * 1024 + 1));
+      const pinsBefore = harness.pin.calls;
+      const result = await handle.stage({
+        owner: OWNER,
+        content: c.content,
+        contentHash: c.contentHash,
+        tags: [],
+        capability: CAPABILITY,
+      });
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error.code).toBe('CONTENT_TOO_LARGE');
+      expect(harness.pin.calls).toBe(pinsBefore);
+    });
+
+    it('rejects oversized meta with CONTENT_TOO_LARGE', async () => {
+      const c = contentFor('meta-limit', { big: 'x'.repeat(9 * 1024) });
+      const result = await handle.stage({
+        owner: OWNER,
+        content: c.content,
+        contentHash: c.contentHash,
+        tags: [],
+        capability: CAPABILITY,
+      });
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error.code).toBe('CONTENT_TOO_LARGE');
     });
   });
 }

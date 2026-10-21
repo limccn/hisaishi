@@ -74,3 +74,50 @@ export function buildGatewayUrl(gateway: string, cid: string): string {
   }
   return `${base}/ipfs/${encodeURIComponent(cid)}`;
 }
+
+import { MAX_CONTENT_BYTES } from './limits.js';
+
+export { MAX_CONTENT_BYTES };
+
+/**
+ * Read a response body with a hard byte cap, while streaming.
+ *
+ * `arrayBuffer()` buffers first, so a hostile upstream could force memory use up
+ * to the platform limit before the route ever sees a length. This cancels the
+ * stream as soon as the cap is crossed; the error carries `tooLarge` so the
+ * route can return `CONTENT_TOO_LARGE` rather than an upstream failure.
+ */
+export async function readCappedBody(
+  response: Response,
+  maxBytes = MAX_CONTENT_BYTES,
+): Promise<Uint8Array> {
+  if (response.body === null) return new Uint8Array();
+
+  const declared = response.headers.get('content-length');
+  if (declared !== null && Number(declared) > maxBytes) {
+    await response.body.cancel().catch(() => undefined);
+    throw Object.assign(new Error(`content exceeds ${maxBytes} bytes`), { tooLarge: true });
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      throw Object.assign(new Error(`content exceeds ${maxBytes} bytes`), { tooLarge: true });
+    }
+    chunks.push(value);
+  }
+
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+}

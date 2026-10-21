@@ -7,6 +7,7 @@
  */
 
 import type { MemoryRow } from './contract.js';
+import { MAX_BODY_BYTES, MAX_CONTENT_BYTES } from './limits.js';
 import { GatewayError } from './errors.js';
 import type { Ports } from './contract.js';
 import {
@@ -37,6 +38,14 @@ export interface GatewayHandle {
   content(cid: string): Promise<GatewayResult<Uint8Array>>;
   /** Digest → pinned CID bridge for verifiers that know only chain state. */
   contentByDigest(cidDigest: string): Promise<GatewayResult<{ cid: string; bytes: Uint8Array }>>;
+  /** Operator marker; not a handshake and clients must not gate on it. */
+  health(): {
+    version: string;
+    capabilities: true;
+    deploymentId: string;
+    sweep: true;
+    limits: { bodyBytes: number; contentBytes: number };
+  };
   close(): Promise<void>;
 }
 
@@ -76,6 +85,13 @@ export function createGatewayHandle(ports: Ports, close: () => Promise<void> = a
     list: (req) => attempt(() => list(ports, req)),
     content: (cid) => attempt(() => content(ports, cid)),
     contentByDigest: (cidDigest) => attempt(() => contentByDigest(ports, cidDigest)),
+    health: () => ({
+      version: '0.1.0',
+      capabilities: true,
+      deploymentId: ports.settings.deploymentId,
+      sweep: true,
+      limits: { bodyBytes: MAX_BODY_BYTES, contentBytes: MAX_CONTENT_BYTES },
+    }),
     close,
   };
 }

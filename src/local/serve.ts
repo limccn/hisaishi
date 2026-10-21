@@ -10,6 +10,18 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 
 import type { GatewayHandle } from '../core/gateway.js';
+import type { ConfirmResponse } from '../core/routes.js';
+import {
+  DEFAULT_RATE_POLICIES,
+  RateLimiter,
+  bodyLimit,
+  isOriginAllowed,
+  originPolicy,
+  rateLimit,
+  requireJson,
+  type OriginOptions,
+  type RatePolicies,
+} from './middleware.js';
 
 /** Parse JSON without throwing into a 500; a malformed body is a 400. */
 async function readJson(c: { req: { json: () => Promise<unknown> } }): Promise<unknown> {
@@ -20,22 +32,34 @@ async function readJson(c: { req: { json: () => Promise<unknown> } }): Promise<u
   }
 }
 
-export function createApp(handle: GatewayHandle): Hono {
-  const app = new Hono();
+export interface AppOptions {
+  /** Origins allowed to read/write from a browser. Loopback is always allowed. */
+  allowedOrigins?: readonly string[];
+  /** Explicit operator opt-in; unsafe outside local development. */
+  allowAnyOrigin?: boolean;
+  ratePolicies?: RatePolicies;
+  rateLimiter?: RateLimiter;
+  /** Tests set 0 to observe an immediate receipt transition. */
+  confirmPendingTtlMs?: number;
+  confirmTerminalTtlMs?: number;
+}
 
-  // The browser UI is served from a different origin (Pages/Vercel) than the
-  // Worker (workers.dev), so every read of `/v1/memories` is cross-origin.
-  // Without this middleware the gateway is functional over curl but invisible
-  // to its only interactive consumer — a gap that unit tests calling
-  // `app.request` cannot see, because they are same-origin by construction.
-  //
-  // Wildcard origin is deliberate: the gateway is keyless and the staging
-  // surface is public read data. No credentials are accepted, so there is no
-  // ambient authority for a hostile origin to borrow.
+export function createApp(handle: GatewayHandle, options: AppOptions = {}): Hono {
+  const app = new Hono();
+  const originOptions: OriginOptions = {
+    allowedOrigins: options.allowedOrigins ?? [],
+    allowAnyOrigin: options.allowAnyOrigin === true,
+  };
+  const limiter = options.rateLimiter ?? new RateLimiter();
+  const policies = options.ratePolicies ?? DEFAULT_RATE_POLICIES;
+
+  // Order matters: an origin rejection must not consume a rate-limit token, and
+  // an oversized body must not be parsed before the size check.
+  app.use('*', originPolicy(originOptions));
   app.use(
     '*',
     cors({
-      origin: '*',
+      origin: (origin) => (origin === '' || isOriginAllowed(origin, originOptions) ? origin || '*' : ''),
       allowMethods: ['GET', 'POST', 'OPTIONS'],
       allowHeaders: ['content-type'],
       // Browsers cannot read a response header unless it is exposed. The verify
@@ -44,6 +68,16 @@ export function createApp(handle: GatewayHandle): Hono {
       maxAge: 86400,
     }),
   );
+  app.use('*', requireJson());
+  app.use('*', bodyLimit());
+  app.use('*', rateLimit(limiter, policies));
+
+  // Short negative cache for confirm: clients poll, and each call is one RPC.
+  const confirmCache = new Map<string, { expires: number; result: Awaited<ReturnType<GatewayHandle['confirm']>> }>();
+  const CONFIRM_PENDING_TTL_MS = options.confirmPendingTtlMs ?? 12_000;
+  const CONFIRM_TERMINAL_TTL_MS = options.confirmTerminalTtlMs ?? 60_000;
+
+  app.get('/v1/health', (c) => c.json(handle.health(), 200));
 
   app.post('/v1/memories', async (c) => {
     const body = (await readJson(c)) as Record<string, unknown> | undefined;
@@ -55,6 +89,7 @@ export function createApp(handle: GatewayHandle): Hono {
       content: body.content,
       contentHash: body.contentHash as string,
       tags: (body.tags as string[] | undefined) ?? [],
+      capability: body.capability as string,
     });
     return result.ok ? c.json(result.value, 200) : c.json(result.error, result.status as never);
   });
@@ -64,9 +99,11 @@ export function createApp(handle: GatewayHandle): Hono {
     if (body === undefined) {
       return c.json({ code: 'SCHEMA_VIOLATION', detail: 'body must be JSON' }, 400);
     }
-    // `limit` is passed through as-is: distinguishing "absent" from an explicit
-    // value is the route's job, and `undefined` is how absence arrives.
-    const result = await handle.build({ owner: body.owner as string, limit: body.limit });
+    // The capability is the whole selector; there is no owner-wide fallback.
+    const result = await handle.build({
+      owner: body.owner as string,
+      capability: body.capability as string,
+    });
     if (!result.ok) return c.json(result.error, result.status as never);
     // `blockHeight` is a bigint (it is hashed as uint64) and JSON cannot
     // serialize one. Decimal strings are the wire form everywhere else in this
@@ -84,10 +121,33 @@ export function createApp(handle: GatewayHandle): Hono {
     if (body === undefined) {
       return c.json({ code: 'SCHEMA_VIOLATION', detail: 'body must be JSON' }, 400);
     }
-    const result = await handle.confirm({
-      owner: body.owner as string,
-      txHash: body.txHash as string,
-    });
+    const rawTxHash = body.txHash;
+    const rawOwner = body.owner;
+    // Validate the cache key's inputs BEFORE touching them: a missing or
+    // non-string field must reach `handle.confirm` and become its typed 400,
+    // not a TypeError from `.toLowerCase()`.
+    const keyable = typeof rawTxHash === 'string' && typeof rawOwner === 'string';
+    const cacheKey = keyable
+      ? `${rawTxHash.toLowerCase()}:${rawOwner.toLowerCase()}`
+      : null;
+    const cached = cacheKey === null ? undefined : confirmCache.get(cacheKey);
+    let result: Awaited<ReturnType<GatewayHandle['confirm']>>;
+    if (cached !== undefined && cached.expires > Date.now()) {
+      result = cached.result;
+    } else {
+      result = await handle.confirm({ owner: rawOwner as string, txHash: rawTxHash as string });
+      // Cache answers and UNKNOWN_TX (the "no commits for this owner yet"
+      // negative answer). Never cache an RPC failure: an outage must not pin a
+      // false answer for the next client.
+      const cacheable =
+        cacheKey !== null &&
+        (result.ok || (!result.ok && result.error.code === 'UNKNOWN_TX'));
+      if (cacheable && cacheKey !== null) {
+        const pending = result.ok ? result.value.status === 'pending' : true;
+        const ttl = pending ? CONFIRM_PENDING_TTL_MS : CONFIRM_TERMINAL_TTL_MS;
+        confirmCache.set(cacheKey, { expires: Date.now() + ttl, result });
+      }
+    }
     return result.ok
       ? c.json(result.value, result.status as never)
       : c.json(result.error, result.status as never);

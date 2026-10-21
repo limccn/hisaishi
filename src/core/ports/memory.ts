@@ -14,12 +14,17 @@ import type {
   PinPort,
   Ports,
   ReceiptLike,
+  RetentionCutoffs,
   RpcPort,
   StageInput,
 } from '../contract.js';
 
 export class MemoryDocStore implements DocStorePort {
   private readonly rows = new Map<string, MemoryRecord>();
+  private readonly pins = new Map<
+    string,
+    { cidDigest: `0x${string}`; contentHash: `0x${string}`; cid: string; pinnedAt: number }
+  >();
 
   private key(owner: string, contentHash: string): string {
     return `${owner.toLowerCase()}:${contentHash.toLowerCase()}`;
@@ -40,6 +45,9 @@ export class MemoryDocStore implements DocStorePort {
       txHash: null,
       batchJson: null,
       createdAt: input.now,
+      capabilityHash: input.capabilityHash,
+      batchedAt: null,
+      commitmentHash: null,
     };
     this.rows.set(key, record);
     return record;
@@ -61,11 +69,70 @@ export class MemoryDocStore implements DocStorePort {
     return null;
   }
 
-  async selectStaged(owner: string, limit: number): Promise<MemoryRecord[]> {
+  async selectStaged(
+    owner: string,
+    capabilityHash: string,
+    limit: number,
+  ): Promise<MemoryRecord[]> {
     return [...this.rows.values()]
-      .filter((r) => r.owner.toLowerCase() === owner.toLowerCase() && r.status === 'staged')
+      .filter(
+        (r) =>
+          r.owner.toLowerCase() === owner.toLowerCase() &&
+          r.status === 'staged' &&
+          r.capabilityHash !== null &&
+          r.capabilityHash.toLowerCase() === capabilityHash.toLowerCase(),
+      )
       .sort((a, b) => a.createdAt - b.createdAt)
       .slice(0, limit);
+  }
+
+  async bindStaged(owner: string, contentHash: string, capabilityHash: string): Promise<void> {
+    const row = this.rows.get(this.key(owner, contentHash));
+    if (row !== undefined && row.status === 'staged') {
+      row.capabilityHash = capabilityHash as `0x${string}`;
+    }
+  }
+
+  async reclaimBatched(
+    owner: string,
+    contentHash: string,
+    capabilityHash: string,
+    olderThan: number,
+  ): Promise<boolean> {
+    const row = this.rows.get(this.key(owner, contentHash));
+    if (row === undefined || row.status !== 'batched') return false;
+    if (row.batchedAt === null || row.batchedAt > olderThan) return false;
+    row.status = 'staged';
+    row.batchId = null;
+    row.batchJson = null;
+    row.batchedAt = null;
+    row.capabilityHash = capabilityHash as `0x${string}`;
+    return true;
+  }
+
+  async reclaimStaleBatched(
+    owner: string,
+    capabilityHash: string,
+    olderThan: number,
+  ): Promise<number> {
+    let reclaimed = 0;
+    for (const row of this.rows.values()) {
+      if (
+        row.owner.toLowerCase() === owner.toLowerCase() &&
+        row.status === 'batched' &&
+        row.capabilityHash !== null &&
+        row.capabilityHash.toLowerCase() === capabilityHash.toLowerCase() &&
+        row.batchedAt !== null &&
+        row.batchedAt <= olderThan
+      ) {
+        row.status = 'staged';
+        row.batchId = null;
+        row.batchJson = null;
+        row.batchedAt = null;
+        reclaimed += 1;
+      }
+    }
+    return reclaimed;
   }
 
   async markBatched(
@@ -73,6 +140,7 @@ export class MemoryDocStore implements DocStorePort {
     contentHashes: string[],
     batchId: string,
     batch: BatchPayload,
+    now: number,
   ): Promise<void> {
     for (const hash of contentHashes) {
       const row = this.rows.get(this.key(owner, hash));
@@ -80,6 +148,7 @@ export class MemoryDocStore implements DocStorePort {
         row.status = 'batched';
         row.batchId = batchId;
         row.batchJson = batch;
+        row.batchedAt = now;
       }
     }
   }
@@ -96,29 +165,75 @@ export class MemoryDocStore implements DocStorePort {
 
   async markSettled(
     owner: string,
-    contentHashes: string[],
+    commits: Array<{ contentHash: string; commitmentHash: string }>,
     status: 'anchored' | 'rejected',
     txHash: string,
   ): Promise<number> {
     let changed = 0;
-    for (const hash of contentHashes) {
-      const row = this.rows.get(this.key(owner, hash));
+    for (const commit of commits) {
+      const row = this.rows.get(this.key(owner, commit.contentHash));
       if (row !== undefined && row.status === 'batched') {
         row.status = status;
         row.txHash = txHash as `0x${string}`;
+        row.commitmentHash = commit.commitmentHash as `0x${string}`;
+        row.batchedAt = null;
         changed += 1;
       }
     }
     return changed;
   }
 
-  async reopenRejected(owner: string, contentHash: string): Promise<void> {
+  async reopenRejected(
+    owner: string,
+    contentHash: string,
+    capabilityHash: string,
+  ): Promise<void> {
     const row = this.rows.get(this.key(owner, contentHash));
     if (row !== undefined && row.status === 'rejected') {
       row.status = 'staged';
       row.batchId = null;
       row.txHash = null;
       row.batchJson = null;
+      row.batchedAt = null;
+      row.commitmentHash = null;
+      row.capabilityHash = capabilityHash as `0x${string}`;
+    }
+  }
+
+  async findPin(cidDigest: string) {
+    return this.pins.get(cidDigest.toLowerCase()) ?? null;
+  }
+
+  async recordPin(entry: {
+    cidDigest: string;
+    contentHash: string;
+    cid: string;
+    pinnedAt: number;
+  }): Promise<void> {
+    this.pins.set(entry.cidDigest.toLowerCase(), {
+      cidDigest: entry.cidDigest as `0x${string}`,
+      contentHash: entry.contentHash as `0x${string}`,
+      cid: entry.cid,
+      pinnedAt: entry.pinnedAt,
+    });
+  }
+
+  async deleteExpired(cutoffs: RetentionCutoffs): Promise<void> {
+    const referenced = new Set(
+      [...this.rows.values()].map((row) => row.cidDigest.toLowerCase()),
+    );
+    for (const [key, row] of this.rows) {
+      if (
+        (row.status === 'staged' && row.createdAt < cutoffs.stagedBefore) ||
+        (row.status === 'rejected' && row.createdAt < cutoffs.rejectedBefore)
+      ) {
+        this.rows.delete(key);
+      }
+    }
+    for (const [digest, pin] of this.pins) {
+      if (pin.pinnedAt < cutoffs.pinsBefore && !referenced.has(digest)) {
+        this.pins.delete(digest);
+      }
     }
   }
 
@@ -233,6 +348,14 @@ export function createMemoryHarness(now: () => number = () => 1_700_000_000_000)
     rpc,
     now,
     fetchContent: (cid: string) => fetchHolder(cid),
+    settings: {
+      deploymentId: 'test',
+      batchTtlMs: 15 * 60 * 1000,
+      stagingTtlMs: 30 * 24 * 60 * 60 * 1000,
+      rejectedTtlMs: 7 * 24 * 60 * 60 * 1000,
+      pinTtlMs: 30 * 24 * 60 * 60 * 1000,
+      sweepIntervalMs: 60 * 60 * 1000,
+    },
   };
 
   return {

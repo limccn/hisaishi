@@ -13,6 +13,7 @@ import { Miniflare } from 'miniflare';
 import { describe, expect, it } from 'vitest';
 
 import { assertKeylessBindings } from '../src/worker/env.js';
+import { contentFor } from './contract-suite.js';
 
 
 describe('@limccn/menhir-core under workerd', () => {
@@ -35,6 +36,7 @@ describe('@limccn/menhir-core under workerd', () => {
         REGISTRY_ADDRESS: '0x' + '11'.repeat(20),
         IPFS_GATEWAY: '',
         DEV_MODE: 'true',
+        HISAISHI_DEPLOYMENT_ID: 'smoke',
       },
     });
     try {
@@ -43,7 +45,13 @@ describe('@limccn/menhir-core under workerd', () => {
       const response = await mf.dispatchFetch('http://worker.test/v1/memories', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ owner: '0x' + '11'.repeat(20), content: { text: 'x', format: 'text.v0' }, contentHash: '0x' + '00'.repeat(32), tags: [] }),
+        body: JSON.stringify({
+          owner: '0x' + '11'.repeat(20),
+          content: { text: 'x', format: 'text.v0' },
+          contentHash: '0x' + '00'.repeat(32),
+          tags: [],
+          capability: 'ab'.repeat(16),
+        }),
       });
       const body = (await response.json()) as { code?: string; detail?: string };
 
@@ -52,6 +60,23 @@ describe('@limccn/menhir-core under workerd', () => {
       // status would be 500 with INTERNAL rather than this typed rejection.
       expect(response.status).toBe(400);
       expect(body.code).toBe('INVALID_HASH');
+
+      // The capability gate runs first; an old client gets a typed 400 rather
+      // than a broad owner-wide selection.
+      const noCapability = await mf.dispatchFetch('http://worker.test/v1/memories', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          owner: '0x' + '11'.repeat(20),
+          content: { text: 'x', format: 'text.v0' },
+          contentHash: '0x' + '00'.repeat(32),
+          tags: [],
+        }),
+      });
+      expect(noCapability.status).toBe(400);
+      expect((await noCapability.json()) as { code?: string }).toMatchObject({
+        code: 'CAPABILITY_REQUIRED',
+      });
     } finally {
       await mf.dispose();
     }
@@ -86,4 +111,56 @@ describe('keyless audit (F2)', () => {
     // The list above will always lag reality; the pattern catches the rest.
     expect(() => assertKeylessBindings({ AGENT_SIGNING_KEY: 'x' })).toThrow(/key-shaped/);
   });
+});
+
+
+describe('F2 app state survives across requests', () => {
+  it('rate limits within one isolate', async () => {
+    const bundle = join(import.meta.dirname, '..', '.wrangler-smoke', 'index.js');
+    const mf = new Miniflare({
+      modules: true,
+      scriptPath: bundle,
+      compatibilityDate: '2026-08-04',
+      compatibilityFlags: ['nodejs_compat'],
+      d1Databases: { DB: 'smoke-rate' },
+      kvNamespaces: ['KV_HISAISHI_STAGING'],
+      bindings: {
+        RPC_URL: 'https://rpc.invalid',
+        REGISTRY_ADDRESS: '0x' + '11'.repeat(20),
+        IPFS_GATEWAY: '',
+        DEV_MODE: 'true',
+        HISAISHI_DEPLOYMENT_ID: 'smoke-rate',
+      },
+    });
+    try {
+      const c = contentFor('rate-smoke');
+      const owner = '0x' + '22'.repeat(20);
+      const body = JSON.stringify({
+        owner,
+        content: c.content,
+        contentHash: c.contentHash,
+        tags: [],
+        capability: 'ab'.repeat(16),
+      });
+      let limited = false;
+      for (let i = 0; i < 40; i += 1) {
+        const response = await mf.dispatchFetch('http://worker.test/v1/memories', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body,
+        });
+        if (response.status === 429) {
+          limited = true;
+          const payload = (await response.json()) as { code?: string };
+          expect(payload.code).toBe('RATE_LIMITED');
+          break;
+        }
+      }
+      // If createApp were rebuilt per request, every request would start a
+      // fresh bucket and this would never trip.
+      expect(limited).toBe(true);
+    } finally {
+      await mf.dispose();
+    }
+  }, 120_000);
 });

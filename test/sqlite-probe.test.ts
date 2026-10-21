@@ -16,6 +16,7 @@ import { openDatabase, SqliteDocStore, DDL } from '../src/local/sqlite.js';
 import { contentFor, OWNER, OTHER_OWNER } from './contract-suite.js';
 
 const dirs: string[] = [];
+const CAPABILITY_HASH = `0x${'ab'.repeat(32)}` as const;
 
 afterEach(async () => {
   while (dirs.length > 0) await rm(dirs.pop()!, { recursive: true, force: true });
@@ -45,6 +46,7 @@ describe('M1-20: node:sqlite concurrency', () => {
           cid: `cid-a-${i}`,
           tags: [],
           now: i,
+          capabilityHash: CAPABILITY_HASH,
         });
         await storeB.insertOrGet({
           owner: OTHER_OWNER,
@@ -53,6 +55,7 @@ describe('M1-20: node:sqlite concurrency', () => {
           cid: `cid-b-${i}`,
           tags: [],
           now: i,
+          capabilityHash: CAPABILITY_HASH,
         });
       }
 
@@ -93,6 +96,7 @@ describe('M1-19: SQLite behaviour the adapter depends on', () => {
         cid: 'bafkreicjk',
         tags: ['topic:偏好'],
         now: 1,
+        capabilityHash: CAPABILITY_HASH,
       });
       const row = await store.findByOwnerAndHash(OWNER, c.contentHash);
       expect(row).not.toBeNull();
@@ -117,6 +121,7 @@ describe('M1-19: SQLite behaviour the adapter depends on', () => {
         cid: 'bafkrei-shared',
         tags: [],
         now: 1,
+        capabilityHash: CAPABILITY_HASH,
       };
       const a1 = await store.insertOrGet({ ...base, owner: OWNER });
       const a2 = await store.insertOrGet({ ...base, owner: OWNER });

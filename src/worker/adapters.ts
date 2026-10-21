@@ -1,11 +1,8 @@
 /**
  * F2 storage adapters — D1 + KV.
  *
- * Same ports, same DDL, different backend. The dedup key is mirrored into KV on
- * every successful write, but **no request path reads it**: `DocStorePort` has
- * no cid-only lookup, so `stage` always resolves dedup through the D1 composite
- * PK. Earlier drafts claimed a KV fast read path; it did not exist, and the
- * method implementing it was dead code.
+ * Same ports, same DDL, different backend. The dedup path is the D1 composite
+ * primary key; the old KV dedup mirror had no reader and is gone.
  *
  * Keyless: nothing here (or in any binding) can hold a wallet key.
  */
@@ -16,6 +13,7 @@ import type {
   DocStorePort,
   MemoryRecord,
   MemoryStatus,
+  RetentionCutoffs,
   StageInput,
 } from '../core/contract.js';
 
@@ -49,6 +47,9 @@ interface Row {
   tx_hash: string | null;
   batch_json: string | null;
   created_at: number;
+  capability_hash: string | null;
+  batched_at: number | null;
+  commitment_hash: string | null;
 }
 
 function toRecord(row: Row): MemoryRecord {
@@ -61,8 +62,11 @@ function toRecord(row: Row): MemoryRecord {
     status: row.status as MemoryStatus,
     batchId: row.batch_id,
     txHash: row.tx_hash as `0x${string}` | null,
-    batchJson: row.batch_json === null ? null : deserializeBatch(row.batch_json),
+    batchJson: null,
     createdAt: row.created_at,
+    capabilityHash: row.capability_hash as `0x${string}` | null,
+    batchedAt: row.batched_at,
+    commitmentHash: row.commitment_hash as `0x${string}` | null,
   };
 }
 
@@ -75,39 +79,15 @@ function serializeBatch(batch: BatchPayload): string {
   });
 }
 
-function deserializeBatch(json: string): BatchPayload {
-  const parsed = JSON.parse(json) as {
-    commitments: Array<Record<string, unknown>>;
-    tagLists: `0x${string}`[][];
-  };
-  return {
-    commitments: parsed.commitments.map((c) => ({
-      ...(c as unknown as BatchPayload['commitments'][number]),
-      blockHeight: BigInt(c.blockHeight as string),
-    })),
-    tagLists: parsed.tagLists,
-  };
-}
-
-function dedupKey(owner: string, contentHash: string): string {
-  return `dedup:${owner.toLowerCase()}:${contentHash.toLowerCase()}`;
-}
-
 export class D1DocStore implements DocStorePort {
-  constructor(
-    private readonly db: D1Like,
-    /** Optional mirror of the dedup key. Not read by any route today. */
-    private readonly kv?: KVLike,
-  ) {}
+  constructor(private readonly db: D1Like) {}
 
   async insertOrGet(input: StageInput): Promise<MemoryRecord> {
-    // D1 has no `INSERT OR IGNORE ... RETURNING` idiom across versions that is
-    // worth relying on; write then read back, exactly as F1 does.
     await this.db
       .prepare(
         `INSERT OR IGNORE INTO memories
-           (cid, content_hash, cid_digest, owner, tags_json, status, created_at)
-         VALUES (?, ?, ?, ?, ?, 'staged', ?)`,
+           (cid, content_hash, cid_digest, owner, tags_json, status, created_at, capability_hash)
+         VALUES (?, ?, ?, ?, ?, 'staged', ?, ?)`,
       )
       .bind(
         input.cid,
@@ -116,6 +96,7 @@ export class D1DocStore implements DocStorePort {
         input.owner,
         JSON.stringify(input.tags),
         input.now,
+        input.capabilityHash,
       )
       .run();
 
@@ -124,43 +105,15 @@ export class D1DocStore implements DocStorePort {
       .bind(input.owner, input.contentHash)
       .first<Row>();
     if (row === null) throw new Error('insertOrGet failed to read back a row');
-
-    // Populate the dedup key only after the D1 write succeeded, so a failed
-    // write cannot leave a KV entry pointing at a row that does not exist.
-    await this.rememberCid(input.owner, input.contentHash, row.cid);
     return toRecord(row);
   }
 
   async findByOwnerAndHash(owner: string, contentHash: string): Promise<MemoryRecord | null> {
-    // Fast path: a KV hit proves the row exists, but the caller needs the full
-    // record, so D1 is still consulted. KV saves nothing here — it is used by
-    // `stage` below, which only needs the CID.
     const row = await this.db
       .prepare('SELECT * FROM memories WHERE owner = ? AND content_hash = ?')
       .bind(owner, contentHash)
       .first<Row>();
     return row === null ? null : toRecord(row);
-  }
-
-  /**
-   * Populate the dedup fast-path key.
-   *
-   * Called after a successful D1 write so KV can never point at a row that does
-   * not exist. Note there is **no read side yet**: `DocStorePort` has no method
-   * for a cid-only lookup, so `stage` always goes through D1. The key is
-   * written now so a future fast read does not have to backfill it — but it is
-   * not on any request path, and the README says so rather than claiming a
-   * shortcut that does not exist.
-   */
-  private async rememberCid(owner: string, contentHash: string, cid: string): Promise<void> {
-    if (this.kv === undefined) return;
-    try {
-      await this.kv.put(dedupKey(owner, contentHash), cid);
-    } catch {
-      // The mirror is a convenience with no reader. A KV quota error must not
-      // turn a successful D1 write and pin into a 500 (review M1) — that is
-      // exactly the Free-tier cliff the PRD warns about.
-    }
   }
 
   async findByCid(cid: string): Promise<MemoryRecord | null> {
@@ -173,21 +126,72 @@ export class D1DocStore implements DocStorePort {
 
   async findByCidDigest(cidDigest: string): Promise<MemoryRecord | null> {
     const row = await this.db
-      .prepare('SELECT * FROM memories WHERE lower(cid_digest) = lower(?) LIMIT 1')
-      .bind(cidDigest)
+      .prepare('SELECT * FROM memories WHERE cid_digest = ? LIMIT 1')
+      .bind(cidDigest.toLowerCase())
       .first<Row>();
     return row === null ? null : toRecord(row);
   }
 
-  async selectStaged(owner: string, limit: number): Promise<MemoryRecord[]> {
+  async selectStaged(
+    owner: string,
+    capabilityHash: string,
+    limit: number,
+  ): Promise<MemoryRecord[]> {
     const { results } = await this.db
       .prepare(
-        `SELECT * FROM memories WHERE owner = ? AND status = 'staged'
-         ORDER BY created_at ASC LIMIT ?`,
+        `SELECT * FROM memories
+          WHERE owner = ? AND status = 'staged' AND capability_hash = ?
+          ORDER BY created_at ASC LIMIT ?`,
       )
-      .bind(owner, limit)
+      .bind(owner, capabilityHash.toLowerCase(), limit)
       .all<Row>();
     return results.map(toRecord);
+  }
+
+  async bindStaged(owner: string, contentHash: string, capabilityHash: string): Promise<void> {
+    await this.db
+      .prepare(
+        `UPDATE memories SET capability_hash = ?
+          WHERE owner = ? AND content_hash = ? AND status = 'staged'`,
+      )
+      .bind(capabilityHash.toLowerCase(), owner, contentHash)
+      .run();
+  }
+
+  async reclaimBatched(
+    owner: string,
+    contentHash: string,
+    capabilityHash: string,
+    olderThan: number,
+  ): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE memories
+            SET status = 'staged', batch_id = NULL, batch_json = NULL,
+                batched_at = NULL, capability_hash = ?
+          WHERE owner = ? AND content_hash = ? AND status = 'batched'
+            AND batched_at IS NOT NULL AND batched_at <= ?`,
+      )
+      .bind(capabilityHash.toLowerCase(), owner, contentHash, olderThan)
+      .run();
+    return Number(result.meta?.changes ?? 0) > 0;
+  }
+
+  async reclaimStaleBatched(
+    owner: string,
+    capabilityHash: string,
+    olderThan: number,
+  ): Promise<number> {
+    const result = await this.db
+      .prepare(
+        `UPDATE memories
+            SET status = 'staged', batch_id = NULL, batch_json = NULL, batched_at = NULL
+          WHERE owner = ? AND capability_hash = ? AND status = 'batched'
+            AND batched_at IS NOT NULL AND batched_at <= ?`,
+      )
+      .bind(owner, capabilityHash.toLowerCase(), olderThan)
+      .run();
+    return Number(result.meta?.changes ?? 0);
   }
 
   async markBatched(
@@ -195,23 +199,27 @@ export class D1DocStore implements DocStorePort {
     contentHashes: string[],
     batchId: string,
     batch: BatchPayload,
+    now: number,
   ): Promise<void> {
-    const json = serializeBatch(batch);
+    await this.db
+      .prepare(
+        'INSERT OR REPLACE INTO batches (batch_id, owner, built_at, batch_json) VALUES (?, ?, ?, ?)',
+      )
+      .bind(batchId, owner, now, serializeBatch(batch))
+      .run();
     for (const hash of contentHashes) {
       await this.db
         .prepare(
-          `UPDATE memories SET status = 'batched', batch_id = ?, batch_json = ?
+          `UPDATE memories SET status = 'batched', batch_id = ?, batch_json = NULL, batched_at = ?
            WHERE owner = ? AND content_hash = ? AND status = 'staged'`,
         )
-        .bind(batchId, json, owner, hash)
+        .bind(batchId, now, owner, hash)
         .run();
     }
   }
 
   async findBatchedByHashes(owner: string, contentHashes: string[]): Promise<MemoryRecord[]> {
     if (contentHashes.length === 0) return [];
-    // D1 caps bound parameters at 100. Chunk so a receipt carrying two
-    // commitBatch calls (2×64 logs) cannot turn confirm into a 500 (review M3).
     const CHUNK = 50;
     const rows: Row[] = [];
     for (let i = 0; i < contentHashes.length; i += CHUNK) {
@@ -231,32 +239,91 @@ export class D1DocStore implements DocStorePort {
 
   async markSettled(
     owner: string,
-    contentHashes: string[],
+    commits: Array<{ contentHash: string; commitmentHash: string }>,
     status: 'anchored' | 'rejected',
     txHash: string,
   ): Promise<number> {
     let changed = 0;
-    for (const hash of contentHashes) {
+    for (const commit of commits) {
       const result = await this.db
         .prepare(
-          `UPDATE memories SET status = ?, tx_hash = ?
+          `UPDATE memories SET status = ?, tx_hash = ?, commitment_hash = ?, batched_at = NULL
            WHERE owner = ? AND content_hash = ? AND status = 'batched'`,
         )
-        .bind(status, txHash, owner, hash)
+        .bind(status, txHash, commit.commitmentHash, owner, commit.contentHash)
         .run();
       changed += Number(result.meta?.changes ?? 0);
     }
     return changed;
   }
 
-  async reopenRejected(owner: string, contentHash: string): Promise<void> {
+  async reopenRejected(
+    owner: string,
+    contentHash: string,
+    capabilityHash: string,
+  ): Promise<void> {
     await this.db
       .prepare(
         `UPDATE memories
-            SET status = 'staged', batch_id = NULL, tx_hash = NULL, batch_json = NULL
+            SET status = 'staged', batch_id = NULL, tx_hash = NULL, batch_json = NULL,
+                batched_at = NULL, commitment_hash = NULL, capability_hash = ?
           WHERE owner = ? AND content_hash = ? AND status = 'rejected'`,
       )
-      .bind(owner, contentHash)
+      .bind(capabilityHash.toLowerCase(), owner, contentHash)
+      .run();
+  }
+
+  async findPin(cidDigest: string) {
+    const row = await this.db
+      .prepare('SELECT * FROM pins WHERE cid_digest = ?')
+      .bind(cidDigest.toLowerCase())
+      .first<{
+        cid_digest: string;
+        content_hash: string;
+        cid: string;
+        pinned_at: number;
+      }>();
+    return row === null
+      ? null
+      : {
+          cidDigest: row.cid_digest as `0x${string}`,
+          contentHash: row.content_hash as `0x${string}`,
+          cid: row.cid,
+          pinnedAt: row.pinned_at,
+        };
+  }
+
+  async recordPin(entry: {
+    cidDigest: string;
+    contentHash: string;
+    cid: string;
+    pinnedAt: number;
+  }): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT OR REPLACE INTO pins (cid_digest, content_hash, cid, pinned_at)
+         VALUES (?, ?, ?, ?)`,
+      )
+      .bind(entry.cidDigest.toLowerCase(), entry.contentHash, entry.cid, entry.pinnedAt)
+      .run();
+  }
+
+  async deleteExpired(cutoffs: RetentionCutoffs): Promise<void> {
+    await this.db
+      .prepare(
+        `DELETE FROM memories
+          WHERE status = 'staged' AND created_at < ?
+             OR status = 'rejected' AND created_at < ?`,
+      )
+      .bind(cutoffs.stagedBefore, cutoffs.rejectedBefore)
+      .run();
+    await this.db
+      .prepare(
+        `DELETE FROM pins
+          WHERE pinned_at < ?
+            AND NOT EXISTS (SELECT 1 FROM memories m WHERE m.cid_digest = pins.cid_digest)`,
+      )
+      .bind(cutoffs.pinsBefore)
       .run();
   }
 
@@ -277,13 +344,6 @@ export class D1DocStore implements DocStorePort {
   }
 }
 
-/**
- * KV content cache (design §2: `content:{cid}` bytes, TTL 7d).
- *
- * KV stores strings; bytes are carried as base64 so arbitrary content survives.
- * Expiry is delegated to `expirationTtl` — KV enforces it, unlike F1's lazy
- * check, which is a backend difference rather than a contract one.
- */
 export class KvContentCache implements ContentCachePort {
   constructor(private readonly kv: KVLike) {}
 

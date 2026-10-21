@@ -24,6 +24,7 @@ import type {
   DocStorePort,
   MemoryRecord,
   MemoryStatus,
+  RetentionCutoffs,
   StageInput,
 } from '../core/contract.js';
 
@@ -39,11 +40,36 @@ CREATE TABLE IF NOT EXISTS memories (
   tx_hash      TEXT,
   batch_json   TEXT,
   created_at   INTEGER NOT NULL,
+  capability_hash TEXT,
+  batched_at    INTEGER,
+  commitment_hash TEXT,
   PRIMARY KEY (owner, content_hash)
 );
 CREATE INDEX IF NOT EXISTS idx_owner_status ON memories(owner, status);
 CREATE INDEX IF NOT EXISTS idx_batch ON memories(batch_id);
 CREATE INDEX IF NOT EXISTS idx_cid ON memories(cid);
+CREATE INDEX IF NOT EXISTS idx_capability ON memories(owner, capability_hash, status);
+
+-- One copy of each built batch, not one per row (M-3 amplification).
+CREATE TABLE IF NOT EXISTS batches (
+  batch_id   TEXT PRIMARY KEY,
+  owner      TEXT NOT NULL,
+  built_at   INTEGER NOT NULL,
+  batch_json TEXT NOT NULL
+);
+
+-- Global pin ledger: dedup by content digest + accounting for orphan pins.
+CREATE TABLE IF NOT EXISTS pins (
+  cid_digest   TEXT PRIMARY KEY,
+  content_hash TEXT NOT NULL,
+  cid          TEXT NOT NULL,
+  pinned_at    INTEGER NOT NULL
+);
+
+-- L-2: normalise before indexing, then look up by equality.
+UPDATE memories SET cid_digest = lower(cid_digest)
+ WHERE cid_digest <> lower(cid_digest);
+CREATE INDEX IF NOT EXISTS idx_cid_digest ON memories(cid_digest);
 
 CREATE TABLE IF NOT EXISTS kv_content (
   key        TEXT PRIMARY KEY,
@@ -58,6 +84,34 @@ CREATE TABLE IF NOT EXISTS kv_emb (
 );
 `;
 
+/**
+ * Additive migration for an F1 database created before this schema.
+ *
+ * Runs BEFORE `DDL` so the new indexes can reference the new columns. The
+ * check is `PRAGMA table_info`, not "try ALTER and swallow the error": a
+ * swallowed error would hide a genuinely different schema.
+ */
+function ensureColumns(db: DatabaseSync): void {
+  const table = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'memories'")
+    .get() as { name: string } | undefined;
+  if (table === undefined) return; // fresh database: DDL creates the final shape
+
+  const existing = new Set(
+    (db.prepare('PRAGMA table_info(memories)').all() as unknown as Array<{ name: string }>).map(
+      (column) => column.name,
+    ),
+  );
+  const missing: Array<[string, string]> = [
+    ['capability_hash', 'TEXT'],
+    ['batched_at', 'INTEGER'],
+    ['commitment_hash', 'TEXT'],
+  ];
+  for (const [name, type] of missing) {
+    if (!existing.has(name)) db.exec(`ALTER TABLE memories ADD COLUMN ${name} ${type}`);
+  }
+}
+
 interface Row {
   cid: string;
   content_hash: string;
@@ -69,6 +123,9 @@ interface Row {
   tx_hash: string | null;
   batch_json: string | null;
   created_at: number;
+  capability_hash: string | null;
+  batched_at: number | null;
+  commitment_hash: string | null;
 }
 
 function toRecord(row: Row): MemoryRecord {
@@ -81,8 +138,12 @@ function toRecord(row: Row): MemoryRecord {
     status: row.status as MemoryStatus,
     batchId: row.batch_id,
     txHash: row.tx_hash as `0x${string}` | null,
-    batchJson: row.batch_json === null ? null : deserializeBatch(row.batch_json),
+    // The built payload lives once in `batches`; rows no longer carry it.
+    batchJson: null,
     createdAt: row.created_at,
+    capabilityHash: row.capability_hash as `0x${string}` | null,
+    batchedAt: row.batched_at,
+    commitmentHash: row.commitment_hash as `0x${string}` | null,
   };
 }
 
@@ -94,20 +155,6 @@ function serializeBatch(batch: BatchPayload): string {
   });
 }
 
-function deserializeBatch(json: string): BatchPayload {
-  const parsed = JSON.parse(json) as {
-    commitments: Array<Record<string, unknown>>;
-    tagLists: `0x${string}`[][];
-  };
-  return {
-    commitments: parsed.commitments.map((c) => ({
-      ...(c as unknown as BatchPayload['commitments'][number]),
-      blockHeight: BigInt(c.blockHeight as string),
-    })),
-    tagLists: parsed.tagLists,
-  };
-}
-
 export class SqliteDocStore implements DocStorePort {
   constructor(private readonly db: DatabaseSync) {}
 
@@ -115,8 +162,8 @@ export class SqliteDocStore implements DocStorePort {
     this.db
       .prepare(
         `INSERT OR IGNORE INTO memories
-           (cid, content_hash, cid_digest, owner, tags_json, status, created_at)
-         VALUES (?, ?, ?, ?, ?, 'staged', ?)`,
+           (cid, content_hash, cid_digest, owner, tags_json, status, created_at, capability_hash)
+         VALUES (?, ?, ?, ?, ?, 'staged', ?, ?)`,
       )
       .run(
         input.cid,
@@ -125,6 +172,7 @@ export class SqliteDocStore implements DocStorePort {
         input.owner,
         JSON.stringify(input.tags),
         input.now,
+        input.capabilityHash,
       );
     // INSERT OR IGNORE returns no useful count here; read back the winner so a
     // lost race returns the row that actually exists.
@@ -150,23 +198,69 @@ export class SqliteDocStore implements DocStorePort {
   }
 
   async findByCidDigest(cidDigest: string): Promise<MemoryRecord | null> {
-    // Hex is hex: the on-chain digest is lowercase, while a query string can
-    // arrive in any case. `cid_digest` has no index in M1 (the table is small
-    // and this is a verify-path read, not the hot list path).
+    // cid_digest is stored lowercase and indexed; equality is enough.
     const row = this.db
-      .prepare('SELECT * FROM memories WHERE lower(cid_digest) = lower(?) LIMIT 1')
-      .get(cidDigest) as Row | undefined;
+      .prepare('SELECT * FROM memories WHERE cid_digest = ? LIMIT 1')
+      .get(cidDigest.toLowerCase()) as Row | undefined;
     return row === undefined ? null : toRecord(row);
   }
 
-  async selectStaged(owner: string, limit: number): Promise<MemoryRecord[]> {
+  async selectStaged(
+    owner: string,
+    capabilityHash: string,
+    limit: number,
+  ): Promise<MemoryRecord[]> {
     const rows = this.db
       .prepare(
-        `SELECT * FROM memories WHERE owner = ? AND status = 'staged'
-         ORDER BY created_at ASC LIMIT ?`,
+        `SELECT * FROM memories
+          WHERE owner = ? AND status = 'staged' AND capability_hash = ?
+          ORDER BY created_at ASC LIMIT ?`,
       )
-      .all(owner, limit) as unknown as Row[];
+      .all(owner, capabilityHash.toLowerCase(), limit) as unknown as Row[];
     return rows.map(toRecord);
+  }
+
+  async bindStaged(owner: string, contentHash: string, capabilityHash: string): Promise<void> {
+    this.db
+      .prepare(
+        `UPDATE memories SET capability_hash = ?
+          WHERE owner = ? AND content_hash = ? AND status = 'staged'`,
+      )
+      .run(capabilityHash.toLowerCase(), owner, contentHash);
+  }
+
+  async reclaimBatched(
+    owner: string,
+    contentHash: string,
+    capabilityHash: string,
+    olderThan: number,
+  ): Promise<boolean> {
+    const result = this.db
+      .prepare(
+        `UPDATE memories
+            SET status = 'staged', batch_id = NULL, batch_json = NULL,
+                batched_at = NULL, capability_hash = ?
+          WHERE owner = ? AND content_hash = ? AND status = 'batched'
+            AND batched_at IS NOT NULL AND batched_at <= ?`,
+      )
+      .run(capabilityHash.toLowerCase(), owner, contentHash, olderThan);
+    return Number(result.changes) > 0;
+  }
+
+  async reclaimStaleBatched(
+    owner: string,
+    capabilityHash: string,
+    olderThan: number,
+  ): Promise<number> {
+    const result = this.db
+      .prepare(
+        `UPDATE memories
+            SET status = 'staged', batch_id = NULL, batch_json = NULL, batched_at = NULL
+          WHERE owner = ? AND capability_hash = ? AND status = 'batched'
+            AND batched_at IS NOT NULL AND batched_at <= ?`,
+      )
+      .run(owner, capabilityHash.toLowerCase(), olderThan);
+    return Number(result.changes);
   }
 
   async markBatched(
@@ -174,13 +268,16 @@ export class SqliteDocStore implements DocStorePort {
     contentHashes: string[],
     batchId: string,
     batch: BatchPayload,
+    now: number,
   ): Promise<void> {
+    this.db
+      .prepare('INSERT OR REPLACE INTO batches (batch_id, owner, built_at, batch_json) VALUES (?, ?, ?, ?)')
+      .run(batchId, owner, now, serializeBatch(batch));
     const stmt = this.db.prepare(
-      `UPDATE memories SET status = 'batched', batch_id = ?, batch_json = ?
+      `UPDATE memories SET status = 'batched', batch_id = ?, batch_json = NULL, batched_at = ?
        WHERE owner = ? AND content_hash = ? AND status = 'staged'`,
     );
-    const json = serializeBatch(batch);
-    for (const hash of contentHashes) stmt.run(batchId, json, owner, hash);
+    for (const hash of contentHashes) stmt.run(batchId, now, owner, hash);
   }
 
   async findBatchedByHashes(owner: string, contentHashes: string[]): Promise<MemoryRecord[]> {
@@ -197,31 +294,94 @@ export class SqliteDocStore implements DocStorePort {
 
   async markSettled(
     owner: string,
-    contentHashes: string[],
+    commits: Array<{ contentHash: string; commitmentHash: string }>,
     status: 'anchored' | 'rejected',
     txHash: string,
   ): Promise<number> {
-    if (contentHashes.length === 0) return 0;
+    if (commits.length === 0) return 0;
     const stmt = this.db.prepare(
-      `UPDATE memories SET status = ?, tx_hash = ?
+      `UPDATE memories SET status = ?, tx_hash = ?, commitment_hash = ?, batched_at = NULL
        WHERE owner = ? AND content_hash = ? AND status = 'batched'`,
     );
     let changed = 0;
-    for (const hash of contentHashes) {
-      const result = stmt.run(status, txHash, owner, hash);
+    for (const commit of commits) {
+      const result = stmt.run(
+        status,
+        txHash,
+        commit.commitmentHash,
+        owner,
+        commit.contentHash,
+      );
       changed += Number(result.changes);
     }
     return changed;
   }
 
-  async reopenRejected(owner: string, contentHash: string): Promise<void> {
+  async reopenRejected(
+    owner: string,
+    contentHash: string,
+    capabilityHash: string,
+  ): Promise<void> {
     this.db
       .prepare(
         `UPDATE memories
-            SET status = 'staged', batch_id = NULL, tx_hash = NULL, batch_json = NULL
+            SET status = 'staged', batch_id = NULL, tx_hash = NULL, batch_json = NULL,
+                batched_at = NULL, commitment_hash = NULL, capability_hash = ?
           WHERE owner = ? AND content_hash = ? AND status = 'rejected'`,
       )
-      .run(owner, contentHash);
+      .run(capabilityHash.toLowerCase(), owner, contentHash);
+  }
+
+  async findPin(cidDigest: string) {
+    const row = this.db
+      .prepare('SELECT * FROM pins WHERE cid_digest = ?')
+      .get(cidDigest.toLowerCase()) as
+      | { cid_digest: string; content_hash: string; cid: string; pinned_at: number }
+      | undefined;
+    return row === undefined
+      ? null
+      : {
+          cidDigest: row.cid_digest as `0x${string}`,
+          contentHash: row.content_hash as `0x${string}`,
+          cid: row.cid,
+          pinnedAt: row.pinned_at,
+        };
+  }
+
+  async recordPin(entry: {
+    cidDigest: string;
+    contentHash: string;
+    cid: string;
+    pinnedAt: number;
+  }): Promise<void> {
+    this.db
+      .prepare(
+        `INSERT OR REPLACE INTO pins (cid_digest, content_hash, cid, pinned_at)
+         VALUES (?, ?, ?, ?)`,
+      )
+      .run(entry.cidDigest.toLowerCase(), entry.contentHash, entry.cid, entry.pinnedAt);
+  }
+
+  async deleteExpired(cutoffs: RetentionCutoffs): Promise<void> {
+    this.db
+      .prepare(
+        `DELETE FROM memories
+          WHERE status = 'staged' AND created_at < ?
+             OR status = 'rejected' AND created_at < ?`,
+      )
+      .run(cutoffs.stagedBefore, cutoffs.rejectedBefore);
+    this.db
+      .prepare(
+        `DELETE FROM pins
+          WHERE pinned_at < ?
+            AND NOT EXISTS (SELECT 1 FROM memories m WHERE m.cid_digest = pins.cid_digest)`,
+      )
+      .run(cutoffs.pinsBefore);
+    // Expired content-cache entries are also housekeeping; a lazy delete on
+    // read never touches a CID that is not requested again.
+    this.db
+      .prepare('DELETE FROM kv_content WHERE expires_at IS NOT NULL AND expires_at <= ?')
+      .run(cutoffs.now);
   }
 
   async list(owner: string, status: MemoryStatus | null, limit: number): Promise<MemoryRecord[]> {
@@ -287,6 +447,9 @@ export function openDatabase(path: string): DatabaseSync {
   db.exec('PRAGMA journal_mode = WAL');
   db.exec('PRAGMA busy_timeout = 5000');
   db.exec('PRAGMA foreign_keys = ON');
+  // Existing databases get the additive columns before DDL creates indexes
+  // over them; a fresh database is created with the final shape by DDL.
+  ensureColumns(db);
   db.exec(DDL);
   return db;
 }

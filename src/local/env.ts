@@ -18,6 +18,13 @@ export interface LocalEnv {
   PINATA_JWT: string | undefined;
   PORT: string | undefined;
   DEV_MODE: string | undefined;
+  /** Stable per-deployment id; part of the capability hash. */
+  HISAISHI_DEPLOYMENT_ID: string;
+  /** Bind host; loopback by default. */
+  HISAISHI_BIND: string;
+  /** Comma-separated browser origins; loopback is always allowed. */
+  HISAISHI_ALLOWED_ORIGINS: string[];
+  HISAISHI_ALLOW_ANY_ORIGIN: boolean;
 }
 
 const FORBIDDEN_ENV_NAMES = [
@@ -61,6 +68,10 @@ export function readLocalEnv(env: Record<string, string | undefined>): LocalEnv 
   if (registryAddress === undefined || !/^0x[0-9a-fA-F]{40}$/.test(registryAddress)) {
     throw new Error('REGISTRY_ADDRESS is required (20-byte hex)');
   }
+  const bind = env.HISAISHI_BIND ?? '127.0.0.1';
+  if (!/^[A-Za-z0-9.:\-[\]]+$/.test(bind)) {
+    throw new Error(`HISAISHI_BIND must be a host, not a URL: ${bind}`);
+  }
   return {
     HISAISHI_DB_PATH: env.HISAISHI_DB_PATH ?? '.longstone/hisaishi.db',
     RPC_URL: rpcUrl,
@@ -69,5 +80,12 @@ export function readLocalEnv(env: Record<string, string | undefined>): LocalEnv 
     PINATA_JWT: env.PINATA_JWT,
     PORT: env.PORT,
     DEV_MODE: env.DEV_MODE,
+    HISAISHI_DEPLOYMENT_ID: env.HISAISHI_DEPLOYMENT_ID ?? 'local',
+    HISAISHI_BIND: bind,
+    HISAISHI_ALLOWED_ORIGINS: (env.HISAISHI_ALLOWED_ORIGINS ?? '')
+      .split(',')
+      .map((origin) => origin.trim())
+      .filter((origin) => origin !== ''),
+    HISAISHI_ALLOW_ANY_ORIGIN: env.HISAISHI_ALLOW_ANY_ORIGIN === 'true',
   };
 }

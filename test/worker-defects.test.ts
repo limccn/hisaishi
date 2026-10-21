@@ -32,34 +32,18 @@ describe('H2 — the offline pin is chosen explicitly, never by a missing JWT', 
 });
 
 describe('M1/M6 — optional KV writes must not fail a request', () => {
-  it('stage still succeeds when the dedup mirror write throws', async () => {
-    const harness = createMemoryHarness();
-    // The harness's content cache is used as the KV mirror in this test.
-    const cache = harness.contentCache as unknown as { put: () => Promise<void> };
-    const original = cache.put;
-    cache.put = async () => {
-      throw new Error('KV quota exceeded');
-    };
-    try {
-      const handle = createGatewayHandle(harness.ports);
-      const c = contentFor('mirror-failure');
-      const result = await handle.stage({
-        owner: OWNER,
-        content: c.content,
-        contentHash: c.contentHash,
-        tags: [],
-      });
-      // The in-memory harness has no separate mirror; this asserts the route
-      // does not treat the cache as required.
-      expect(result.ok).toBe(true);
-    } finally {
-      cache.put = original;
-    }
-  });
-
   it('content is returned even when the cache put fails', async () => {
     const harness = createMemoryHarness();
     const c = contentFor('cache-failure');
+    await harness.docStore.insertOrGet({
+      owner: `0x${'11'.repeat(20)}` as `0x${string}`,
+      contentHash: c.contentHash,
+      cidDigest: c.cidDigest,
+      cid: 'bafkreicachefail',
+      tags: [],
+      now: 1,
+      capabilityHash: `0x${'ab'.repeat(32)}` as `0x${string}`,
+    });
     harness.setContent('bafkreicachefail', c.bytes);
 
     const cache = harness.contentCache as unknown as { put: () => Promise<void> };

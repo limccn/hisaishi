@@ -42,6 +42,25 @@
   // gateway URL belongs in a secret because it changes per deployment. RPC_URL
   // and PINATA_JWT are secrets for the same reason.
 
+  "vars": {
+    // Required. Stable per logical deployment and part of the capability hash:
+    // two deployments sharing this D1 database MUST use different ids, or they
+    // could select each other's staged rows. Changing it invalidates staged
+    // rows until they are re-staged.
+    "HISAISHI_DEPLOYMENT_ID": "hisaishi-prod-1",
+    // Browser origins allowed to read/write. Loopback is always allowed; a
+    // write with a present, non-listed Origin gets 403. Set the deployed UI
+    // origin here (and keep it in sync with the Pages project).
+    "HISAISHI_ALLOWED_ORIGINS": "https://longstone-ui.pages.dev"
+    // Wildcard is deliberately absent; enable it only for local development
+    // with "HISAISHI_ALLOW_ANY_ORIGIN": "true".
+  },
+
+  // Edge rate limiting and WAF are dashboard/account controls, not repo
+  // settings. The app-level limiter is a per-isolate cost guard; configure
+  // Cloudflare rate-limiting rules for /v1/memories, /v1/batches/* and
+  // /v1/content before exposing the Worker publicly (NV-2).
+
   "observability": {
     "enabled": true
   }

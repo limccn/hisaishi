@@ -7,7 +7,11 @@
  * `CONTENT_NOT_FOUND` (404) and everything else to `GATEWAY_UPSTREAM` (502).
  */
 
-import { buildGatewayUrl, classifyGatewayResponse } from '../core/gateway-url.js';
+import {
+  buildGatewayUrl,
+  classifyGatewayResponse,
+  readCappedBody,
+} from '../core/gateway-url.js';
 
 export interface HisaishiClientOptions {
   ipfsGateway: string;
@@ -52,7 +56,7 @@ export function createHisaishiClient(opts: HisaishiClientOptions): HisaishiClien
       if (outcome === 'upstream') {
         throw new Error(`gateway returned ${response.status} for ${cid}`);
       }
-      return new Uint8Array(await response.arrayBuffer());
+      return readCappedBody(response);
     },
   };
 }

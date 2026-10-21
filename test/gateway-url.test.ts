@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { buildGatewayUrl, classifyGatewayResponse } from '../src/core/gateway-url.js';
+import {
+  buildGatewayUrl,
+  classifyGatewayResponse,
+  readCappedBody,
+} from '../src/core/gateway-url.js';
 
 describe('dedicated gateway URL', () => {
   it('appends /ipfs for a bare host', () => {
@@ -48,5 +52,26 @@ describe('gateway response classification', () => {
 
   it('reads 5xx as upstream', async () => {
     expect(await classifyGatewayResponse(new Response('', { status: 503 }))).toBe('upstream');
+  });
+});
+
+describe('streaming content cap', () => {
+  it('accepts a body at the cap', async () => {
+    const bytes = new Uint8Array(5).fill(1);
+    expect(await readCappedBody(new Response(bytes), 5)).toEqual(bytes);
+  });
+
+  it('cancels a stream that crosses the cap', async () => {
+    const bytes = new Uint8Array(10).fill(1);
+    await expect(readCappedBody(new Response(bytes), 5)).rejects.toMatchObject({
+      tooLarge: true,
+    });
+  });
+
+  it('rejects a declared length above the cap before reading', async () => {
+    const response = new Response(new Uint8Array(2), {
+      headers: { 'content-length': '99' },
+    });
+    await expect(readCappedBody(response, 5)).rejects.toMatchObject({ tooLarge: true });
   });
 });

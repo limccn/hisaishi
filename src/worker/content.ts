@@ -6,7 +6,11 @@
  * failure.
  */
 
-import { buildGatewayUrl, classifyGatewayResponse } from '../core/gateway-url.js';
+import {
+  buildGatewayUrl,
+  classifyGatewayResponse,
+  readCappedBody,
+} from '../core/gateway-url.js';
 
 export function createGatewayContentFetch(
   ipfsGateway: string,
@@ -36,6 +40,6 @@ export function createGatewayContentFetch(
     if (outcome === 'upstream') {
       throw new Error(`gateway returned ${response.status} for ${url}`);
     }
-    return new Uint8Array(await response.arrayBuffer());
+    return readCappedBody(response);
   };
 }

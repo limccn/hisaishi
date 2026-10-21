@@ -9,14 +9,24 @@
 import { describe, expect, it } from 'vitest';
 
 import { createGatewayHandle } from '../src/core/gateway.js';
+import { OTHER_OWNER } from './contract-suite.js';
+import { DEFAULT_RATE_POLICIES } from '../src/local/middleware.js';
 import { createMemoryHarness } from '../src/core/ports/memory.js';
 import { createApp } from '../src/local/serve.js';
 import { contentFor, OWNER, TX_HASH } from './contract-suite.js';
 
 function makeApp() {
   const harness = createMemoryHarness();
-  return { app: createApp(createGatewayHandle(harness.ports)), harness };
+  return {
+    app: createApp(createGatewayHandle(harness.ports), {
+      allowedOrigins: ['https://longstone-ui.pages.dev'],
+    }),
+    harness,
+  };
 }
+
+const CAPABILITY = 'ab'.repeat(16);
+const CAPABILITY_B = 'cd'.repeat(16);
 
 describe('HTTP transport', () => {
   it('POST /v1/memories maps success and typed failures to status+body', async () => {
@@ -25,11 +35,13 @@ describe('HTTP transport', () => {
 
     const ok = await app.request('/v1/memories', {
       method: 'POST',
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         owner: OWNER,
         content: c.content,
         contentHash: c.contentHash,
         tags: [],
+        capability: CAPABILITY,
       }),
     });
     expect(ok.status).toBe(200);
@@ -38,11 +50,13 @@ describe('HTTP transport', () => {
 
     const tampered = await app.request('/v1/memories', {
       method: 'POST',
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         owner: OWNER,
         content: c.content,
         contentHash: `0x${'00'.repeat(32)}`,
         tags: [],
+        capability: CAPABILITY,
       }),
     });
     expect(tampered.status).toBe(400);
@@ -51,34 +65,50 @@ describe('HTTP transport', () => {
 
   it('malformed JSON is a 400, not a 500', async () => {
     const { app } = makeApp();
-    const response = await app.request('/v1/memories', { method: 'POST', body: 'not json' });
+    const response = await app.request('/v1/memories', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: 'not json',
+    });
     expect(response.status).toBe(400);
   });
 
-  it('POST /v1/batches/build distinguishes absent limit from an explicit zero', async () => {
+  it('POST /v1/batches/build requires the session capability', async () => {
     const { app } = makeApp();
-    const c = contentFor('limit-http');
+    const c = contentFor('capability-http');
     await app.request('/v1/memories', {
       method: 'POST',
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         owner: OWNER,
         content: c.content,
         contentHash: c.contentHash,
         tags: [],
+        capability: CAPABILITY,
       }),
     });
 
-    const absent = await app.request('/v1/batches/build', {
+    const missing = await app.request('/v1/batches/build', {
       method: 'POST',
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ owner: OWNER }),
     });
-    expect(absent.status).toBe(200);
+    expect(missing.status).toBe(400);
+    expect((await missing.json()) as { code: string }).toMatchObject({ code: 'CAPABILITY_REQUIRED' });
 
-    const zero = await app.request('/v1/batches/build', {
+    const other = await app.request('/v1/batches/build', {
       method: 'POST',
-      body: JSON.stringify({ owner: OWNER, limit: 0 }),
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ owner: OWNER, capability: CAPABILITY_B }),
     });
-    expect(zero.status).toBe(413);
+    expect(other.status).toBe(409);
+
+    const ok = await app.request('/v1/batches/build', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ owner: OWNER, capability: CAPABILITY }),
+    });
+    expect(ok.status).toBe(200);
   });
 
   it('POST /v1/batches/confirm returns 202 while pending', async () => {
@@ -86,17 +116,24 @@ describe('HTTP transport', () => {
     const c = contentFor('pending-http');
     await app.request('/v1/memories', {
       method: 'POST',
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         owner: OWNER,
         content: c.content,
         contentHash: c.contentHash,
         tags: [],
+        capability: CAPABILITY,
       }),
     });
-    await app.request('/v1/batches/build', { method: 'POST', body: JSON.stringify({ owner: OWNER }) });
+    await app.request('/v1/batches/build', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ owner: OWNER, capability: CAPABILITY }),
+    });
 
     const response = await app.request('/v1/batches/confirm', {
       method: 'POST',
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ owner: OWNER, txHash: TX_HASH }),
     });
     expect(response.status).toBe(202);
@@ -122,11 +159,13 @@ describe('HTTP transport', () => {
     const c = contentFor('digest-content');
     const staged = await app.request('/v1/memories', {
       method: 'POST',
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         owner: OWNER,
         content: c.content,
         contentHash: c.contentHash,
         tags: [],
+        capability: CAPABILITY,
       }),
     });
     const body = (await staged.json()) as { cid: string };
@@ -141,21 +180,59 @@ describe('HTTP transport', () => {
     expect(unknown.status).toBe(404);
   });
 
-  it('GET /v1/content serves bytes and distinguishes 404 from 502', async () => {
+  it('GET /v1/content is membership-gated and distinguishes 404 from 502', async () => {
     const { app, harness } = makeApp();
-    harness.setContent('bafkreibytes', new Uint8Array([1, 2, 3]));
+    const known = contentFor('known content bytes');
+    const other = contentFor('a different memory');
+    const capabilityHash = `0x${'ab'.repeat(32)}` as `0x${string}`;
+
+    await harness.docStore.insertOrGet({
+      owner: OWNER,
+      contentHash: known.contentHash,
+      cidDigest: known.cidDigest,
+      cid: 'bafkreibytes',
+      tags: [],
+      now: 1,
+      capabilityHash,
+    });
+    harness.setContent('bafkreibytes', known.bytes);
 
     const ok = await app.request('/v1/content?cid=bafkreibytes');
     expect(ok.status).toBe(200);
-    expect(new Uint8Array(await ok.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]));
+    expect(new Uint8Array(await ok.arrayBuffer())).toEqual(known.bytes);
 
+    // Unknown CID: no row, no upstream call.
     harness.setFetchFailure('bafkreimissing', 'notFound');
     const missing = await app.request('/v1/content?cid=bafkreimissing');
     expect(missing.status).toBe(404);
 
+    // Known row, upstream outage.
+    await harness.docStore.insertOrGet({
+      owner: OWNER,
+      contentHash: other.contentHash,
+      cidDigest: other.cidDigest,
+      cid: 'bafkreiup',
+      tags: [],
+      now: 2,
+      capabilityHash,
+    });
     harness.setFetchFailure('bafkreiup', 'upstream');
     const upstream = await app.request('/v1/content?cid=bafkreiup');
     expect(upstream.status).toBe(502);
+
+    // Known row, upstream returns different bytes than the row commits to.
+    await harness.docStore.insertOrGet({
+      owner: OWNER,
+      contentHash: `0x${'33'.repeat(32)}`,
+      cidDigest: other.cidDigest,
+      cid: 'bafkreimismatch',
+      tags: [],
+      now: 3,
+      capabilityHash,
+    });
+    harness.setContent('bafkreimismatch', known.bytes);
+    const mismatch = await app.request('/v1/content?cid=bafkreimismatch');
+    expect(mismatch.status).toBe(502);
   });
 });
 
@@ -167,16 +244,19 @@ describe('RPC failure during confirm', () => {
     const c = contentFor('rpc-down');
     await app.request('/v1/memories', {
       method: 'POST',
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         owner: OWNER,
         content: c.content,
         contentHash: c.contentHash,
         tags: [],
+        capability: CAPABILITY,
       }),
     });
     await app.request('/v1/batches/build', {
       method: 'POST',
-      body: JSON.stringify({ owner: OWNER }),
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ owner: OWNER, capability: CAPABILITY }),
     });
 
     harness.rpc.getTransactionReceipt = async () => {
@@ -185,6 +265,7 @@ describe('RPC failure during confirm', () => {
 
     const response = await app.request('/v1/batches/confirm', {
       method: 'POST',
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ owner: OWNER, txHash: TX_HASH }),
     });
     expect(response.status).toBe(502);
@@ -202,11 +283,13 @@ describe('pin failure and D1 chunking', () => {
     };
     const response = await app.request('/v1/memories', {
       method: 'POST',
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         owner: OWNER,
         content: c.content,
         contentHash: c.contentHash,
         tags: [],
+        capability: CAPABILITY,
       }),
     });
     expect(response.status).toBe(502);
@@ -233,7 +316,7 @@ describe('browser reachability (CORS)', () => {
       },
     });
     expect(response.status).toBe(204);
-    expect(response.headers.get('access-control-allow-origin')).toBe('*');
+    expect(response.headers.get('access-control-allow-origin')).toBe('https://longstone-ui.pages.dev');
     expect(response.headers.get('access-control-allow-methods')).toContain('GET');
     expect(response.headers.get('access-control-allow-methods')).toContain('POST');
   });
@@ -244,6 +327,229 @@ describe('browser reachability (CORS)', () => {
       headers: { origin: 'https://longstone-ui.pages.dev' },
     });
     expect(response.status).toBe(200);
-    expect(response.headers.get('access-control-allow-origin')).toBe('*');
+    expect(response.headers.get('access-control-allow-origin')).toBe('https://longstone-ui.pages.dev');
+  });
+});
+
+describe('capability and content limits', () => {
+  it('stage rejects a missing or malformed capability', async () => {
+    const { app } = makeApp();
+    const c = contentFor('stage-capability');
+    const base = {
+      owner: OWNER,
+      content: c.content,
+      contentHash: c.contentHash,
+      tags: [],
+    };
+    const missing = await app.request('/v1/memories', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(base),
+    });
+    expect(missing.status).toBe(400);
+    expect((await missing.json()) as { code: string }).toMatchObject({
+      code: 'CAPABILITY_REQUIRED',
+    });
+
+    const malformed = await app.request('/v1/memories', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...base, capability: 'zz' }),
+    });
+    expect(malformed.status).toBe(400);
+    expect((await malformed.json()) as { code: string }).toMatchObject({
+      code: 'INVALID_CAPABILITY',
+    });
+  });
+
+  it('rejects an oversized upstream object before caching', async () => {
+    const { app, harness } = makeApp();
+    const c = contentFor('oversized-upstream');
+    const staged = await app.request('/v1/memories', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        owner: OWNER,
+        content: c.content,
+        contentHash: c.contentHash,
+        tags: [],
+        capability: CAPABILITY,
+      }),
+    });
+    expect(staged.status).toBe(200);
+    const { cid } = (await staged.json()) as { cid: string };
+    harness.setContent(cid, new Uint8Array(1024 * 1024 + 1));
+
+    const response = await app.request(`/v1/content?cid=${cid}`);
+    expect(response.status).toBe(413);
+    expect((await response.json()) as { code: string }).toMatchObject({
+      code: 'CONTENT_TOO_LARGE',
+    });
+  });
+});
+
+describe('transport middleware', () => {
+  it('requires a JSON content type on writes', async () => {
+    const { app } = makeApp();
+    const response = await app.request('/v1/memories', { method: 'POST', body: '{}' });
+    expect(response.status).toBe(415);
+  });
+
+  it('rejects a body above the limit before parsing', async () => {
+    const { app } = makeApp();
+    const response = await app.request('/v1/memories', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'content-length': String(300 * 1024),
+      },
+      body: '{}',
+    });
+    expect(response.status).toBe(413);
+  });
+
+  it('rejects a disallowed origin on writes', async () => {
+    const { app } = makeApp();
+    const c = contentFor('origin-denied');
+    const response = await app.request('/v1/memories', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        origin: 'https://evil.example',
+      },
+      body: JSON.stringify({
+        owner: OWNER,
+        content: c.content,
+        contentHash: c.contentHash,
+        tags: [],
+        capability: CAPABILITY,
+      }),
+    });
+    expect(response.status).toBe(403);
+    expect((await response.json()) as { code: string }).toMatchObject({
+      code: 'ORIGIN_NOT_ALLOWED',
+    });
+  });
+
+  it('rate limits after the configured budget', async () => {
+    const harness = createMemoryHarness();
+    const app = createApp(createGatewayHandle(harness.ports), {
+      allowedOrigins: ['https://longstone-ui.pages.dev'],
+      ratePolicies: {
+        ...DEFAULT_RATE_POLICIES,
+        stage: { max: 1, windowMs: 60_000 },
+      },
+    });
+    const c = contentFor('rate-limited');
+    const body = JSON.stringify({
+      owner: OWNER,
+      content: c.content,
+      contentHash: c.contentHash,
+      tags: [],
+      capability: CAPABILITY,
+    });
+    const first = await app.request('/v1/memories', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body,
+    });
+    expect(first.status).toBe(200);
+    const second = await app.request('/v1/memories', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body,
+    });
+    expect(second.status).toBe(429);
+    expect((await second.json()) as { code: string }).toMatchObject({ code: 'RATE_LIMITED' });
+  });
+
+  it('exposes the deployment id on health', async () => {
+    const { app } = makeApp();
+    const response = await app.request('/v1/health');
+    expect(response.status).toBe(200);
+    expect((await response.json()) as { deploymentId: string }).toMatchObject({
+      deploymentId: 'test',
+      capabilities: true,
+    });
+  });
+});
+
+describe('confirm cache scoping', () => {
+  it("does not replay an owner's cached answer to another owner", async () => {
+    const { app, harness } = makeApp();
+    const c = contentFor('confirm-owner-scope');
+    await app.request('/v1/memories', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        owner: OWNER,
+        content: c.content,
+        contentHash: c.contentHash,
+        tags: [],
+        capability: CAPABILITY,
+      }),
+    });
+    await app.request('/v1/batches/build', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ owner: OWNER, capability: CAPABILITY }),
+    });
+    harness.rpc.setReceipt(TX_HASH, {
+      status: 'success',
+      commits: [
+        {
+          owner: OWNER,
+          contentHash: c.contentHash,
+          commitmentHash: `0x${'cd'.repeat(32)}`,
+        },
+      ],
+    });
+
+    const first = await app.request('/v1/batches/confirm', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ owner: OWNER, txHash: TX_HASH }),
+    });
+    expect(first.status).toBe(200);
+
+    // Same tx, different owner: the cached anchored answer must not leak.
+    const other = await app.request('/v1/batches/confirm', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ owner: OTHER_OWNER, txHash: TX_HASH }),
+    });
+    expect(other.status).toBe(400);
+    expect((await other.json()) as { code: string }).toMatchObject({ code: 'UNKNOWN_TX' });
+
+    // The UNKNOWN_TX negative answer is cached: a second call costs no RPC.
+    const callsBefore = harness.rpc.calls;
+    const again = await app.request('/v1/batches/confirm', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ owner: OTHER_OWNER, txHash: TX_HASH }),
+    });
+    expect(again.status).toBe(400);
+    expect(harness.rpc.calls).toBe(callsBefore);
+  });
+});
+
+describe('confirm input handling', () => {
+  it('returns typed 400s for missing or non-string fields, never 500', async () => {
+    const { app } = makeApp();
+    const noOwner = await app.request('/v1/batches/confirm', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ txHash: `0x${'ab'.repeat(32)}` }),
+    });
+    expect(noOwner.status).toBe(400);
+    expect((await noOwner.json()) as { code: string }).toMatchObject({ code: 'INVALID_HEX' });
+
+    const badHash = await app.request('/v1/batches/confirm', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ owner: OWNER, txHash: 123 }),
+    });
+    expect(badHash.status).toBe(400);
+    expect((await badHash.json()) as { code: string }).toMatchObject({ code: 'INVALID_HEX' });
   });
 });

@@ -68,8 +68,13 @@ export function createReceiptRpc(rpcUrl: string, registryAddress: `0x${string}`)
             const args = decoded.args as unknown as {
               owner: `0x${string}`;
               contentHash: `0x${string}`;
+              commitmentHash: `0x${string}`;
             };
-            commits.push({ owner: args.owner, contentHash: args.contentHash });
+            commits.push({
+              owner: args.owner,
+              contentHash: args.contentHash,
+              commitmentHash: args.commitmentHash,
+            });
           }
         } catch {
           // A log from another contract in the same tx is expected; ignore it.

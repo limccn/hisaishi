@@ -11,7 +11,15 @@
  */
 
 import { createGatewayHandle, type GatewayHandle } from '../core/gateway.js';
-import type { ContentCachePort, DocStorePort, PinPort, Ports, RpcPort } from '../core/contract.js';
+import type {
+  ContentCachePort,
+  DocStorePort,
+  GatewaySettings,
+  PinPort,
+  Ports,
+  RpcPort,
+} from '../core/contract.js';
+import { settingsFor } from '../core/settings.js';
 import { openDatabase, SqliteContentCache, SqliteDocStore } from './sqlite.js';
 import { createHisaishiClient } from './hisaishi-client.js';
 
@@ -29,6 +37,10 @@ export interface LocalGatewayOptions {
   pinataJwt?: string | undefined;
   /** Explicit offline pin mode. Never inferred from a missing JWT. */
   devMode?: boolean | undefined;
+  /** Stable per-deployment id; part of the capability hash. */
+  deploymentId?: string | undefined;
+  /** TTL overrides for tests and operators. */
+  settings?: Partial<GatewaySettings> | undefined;
   /** Overrides for tests; in production the defaults below are used. */
   docStore?: DocStorePort | undefined;
   contentCache?: ContentCachePort | undefined;
@@ -64,6 +76,7 @@ export async function createGateway(opts: LocalGatewayOptions): Promise<OpenGate
     rpc,
     fetchContent: (cid) => client.fetchContent(cid),
     now: opts.now ?? (() => Date.now()),
+    settings: settingsFor(opts.deploymentId ?? 'local', opts.settings ?? {}),
   };
 
   const handle = createGatewayHandle(ports, async () => {

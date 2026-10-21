@@ -40,7 +40,7 @@ describe('F1 end-to-end over HTTP + SQLite', () => {
       docStore: new SqliteDocStore(db),
       contentCache: new SqliteContentCache(db),
     };
-    const app = createApp(createGatewayHandle(ports));
+    const app = createApp(createGatewayHandle(ports), { confirmPendingTtlMs: 0 });
 
     await new Promise<void>((resolve) => {
       server = serve({ fetch: app.fetch, port: 0 }, (info) => {
@@ -72,6 +72,7 @@ describe('F1 end-to-end over HTTP + SQLite', () => {
       content: c.content,
       contentHash: c.contentHash,
       tags: ['layer:semantic', 'topic:偏好'],
+      capability: 'ab'.repeat(16),
     });
     expect(staged.status).toBe(200);
     const stagedBody = (await staged.json()) as { cid: string; status: string };
@@ -85,7 +86,7 @@ describe('F1 end-to-end over HTTP + SQLite', () => {
     expect(rows.rows[0]!.tags).toContain('topic:偏好');
     expect(rows.rows[0]!.tags).toContain('layer:semantic');
 
-    const built = await post('/v1/batches/build', { owner: OWNER });
+    const built = await post('/v1/batches/build', { owner: OWNER, capability: 'ab'.repeat(16) });
     expect(built.status).toBe(200);
     const batch = (await built.json()) as {
       commitments: Array<{ blockHeight: string; signer: string; prev: string }>;
@@ -101,7 +102,7 @@ describe('F1 end-to-end over HTTP + SQLite', () => {
 
     harness.rpc.setReceipt(TX_HASH, {
       status: 'success',
-      commits: [{ owner: OWNER, contentHash: c.contentHash }],
+      commits: [{ owner: OWNER, contentHash: c.contentHash, commitmentHash: `0x${'cd'.repeat(32)}` }],
     });
     const confirmed = await post('/v1/batches/confirm', { owner: OWNER, txHash: TX_HASH });
     expect(confirmed.status).toBe(200);
@@ -133,7 +134,7 @@ describe('F1 end-to-end over HTTP + SQLite', () => {
     // Any endpoint that signs would have to be listed here; the route table is
     // the whole surface, and none of these exist.
     for (const path of ['/v1/sign', '/v1/keys', '/v1/account']) {
-      const response = await fetch(`${baseUrl}${path}`, { method: 'POST', body: '{}' });
+      const response = await fetch(`${baseUrl}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
       expect(response.status, path).toBe(404);
     }
   });

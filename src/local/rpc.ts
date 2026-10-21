@@ -42,6 +42,7 @@ export function createReceiptRpc(rpcUrl: string, registryAddress: `0x${string}`)
         commits: logs.map((log) => ({
           owner: log.args.owner as `0x${string}`,
           contentHash: log.args.contentHash as `0x${string}`,
+          commitmentHash: log.args.commitmentHash as `0x${string}`,
         })),
       };
     },

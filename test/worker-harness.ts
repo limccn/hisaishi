@@ -39,13 +39,11 @@ export async function createWorkerHarness(): Promise<WorkerHarnessResult> {
     await db.prepare(statement).bind().run();
   }
 
-  const docStore = new D1DocStore(db, kv);
+  const docStore = new D1DocStore(db);
   const memory = createMemoryHarness();
 
   const ports: Ports = {
     ...memory.ports,
-    // The dedup key is mirrored into KV on write but no route reads it, so
-    // the port surface is the same as F1's; the D1 lookup is the only path.
     docStore: docStore satisfies DocStorePort,
     contentCache: new KvContentCache(kv),
   };
