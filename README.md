@@ -12,7 +12,7 @@ Signing belongs to [longstone](../longstone); hisaishi only prepares.
 npm install @limccn/hisaishi-gateway
 ```
 
-Published to npmjs and GitHub Packages as `0.1.0`. The root export is the
+Published to npmjs and GitHub Packages as `0.1.1`. The root export is the
 keyless contract (`createGatewayHandle`, route types); `/local` is the Node +
 `node:sqlite` form; `/worker` is the Cloudflare Workers entry.
 
@@ -284,12 +284,13 @@ The shared contract suite runs three times: on an in-memory harness, on the real
 contract" a test rather than an assumption — and the second run is what caught
 the suite asserting against the harness's internal store instead of the adapter.
 
-## Security status (0.1.0)
+## Security status (0.1.0 → 0.1.1)
 
-The published 0.1.0 predates capability binding. Until the patched gateway is
-deployed, do not expose a shared remote gateway: an anonymous caller can stage
-rows into another owner's batch and consume unbounded pin/RPC/storage. Local
-single-machine use is the supported mode for 0.1.0.
+The published 0.1.0 predates capability binding; 0.1.1 is the patched release.
+Until the patched gateway is deployed, do not expose a shared remote gateway:
+an anonymous caller can stage rows into another owner's batch and consume
+unbounded pin/RPC/storage. Local single-machine use is the supported mode on
+0.1.0.
 
 ## Known limits (M1)
 

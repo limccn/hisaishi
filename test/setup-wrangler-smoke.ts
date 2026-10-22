@@ -21,12 +21,39 @@ rmSync(dir, { recursive: true, force: true });
 mkdirSync(dir, { recursive: true });
 
 // TypeScript first: wrangler bundles `dist/worker/index.js`.
-execFileSync('pnpm', ['build'], { cwd: root, stdio: 'ignore', shell: true });
-execFileSync('npx', ['wrangler', 'deploy', '--dry-run', '--outdir', dir], {
-  cwd: root,
-  stdio: 'ignore',
-  shell: true,
-});
+//
+// Use the package manager that launched the test (`npm_execpath`) rather than
+// whatever `pnpm` resolves to on PATH. A corepack shim for another pnpm major
+// rejects the project's `packageManager`, which made the whole suite fail in an
+// otherwise valid environment. Falling back to PATH keeps `vitest` invoked
+// directly working.
+const npmExecPath = process.env.npm_execpath;
+
+function runPnpm(args: string[]): void {
+  if (npmExecPath !== undefined && npmExecPath !== '') {
+    // `npm_execpath` may be a JS shim (`pnpm.cjs`) or a native binary
+    // (`pnpm-native.exe`); only the former goes through node.
+    const isJs = npmExecPath.endsWith('.cjs') || npmExecPath.endsWith('.js') || npmExecPath.endsWith('.mjs');
+    if (isJs) {
+      execFileSync(process.execPath, [npmExecPath, ...args], { cwd: root, stdio: 'ignore' });
+    } else {
+      execFileSync(npmExecPath, args, { cwd: root, stdio: 'ignore', shell: true });
+    }
+    return;
+  }
+  execFileSync('pnpm', args, { cwd: root, stdio: 'ignore', shell: true });
+}
+
+function runWrangler(args: string[]): void {
+  if (npmExecPath !== undefined && npmExecPath !== '') {
+    runPnpm(['exec', 'wrangler', ...args]);
+    return;
+  }
+  execFileSync('npx', ['wrangler', ...args], { cwd: root, stdio: 'ignore', shell: true });
+}
+
+runPnpm(['build']);
+runWrangler(['deploy', '--dry-run', '--outdir', dir]);
 
 process.on('exit', () => {
   try {

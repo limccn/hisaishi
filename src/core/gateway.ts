@@ -86,7 +86,7 @@ export function createGatewayHandle(ports: Ports, close: () => Promise<void> = a
     content: (cid) => attempt(() => content(ports, cid)),
     contentByDigest: (cidDigest) => attempt(() => contentByDigest(ports, cidDigest)),
     health: () => ({
-      version: '0.1.0',
+      version: '0.1.1',
       capabilities: true,
       deploymentId: ports.settings.deploymentId,
       sweep: true,
