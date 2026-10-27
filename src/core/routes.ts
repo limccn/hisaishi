@@ -18,6 +18,7 @@ import type {
 import { GatewayError } from './errors.js';
 import { verifyContent, type VerifiedContent } from './integrity.js';
 import { MAX_CONTENT_BYTES } from './limits.js';
+import { redactText, errorMessage } from './redact.js';
 
 const MAX_BATCH = 64;
 const CAPABILITY_PATTERN = /^[0-9a-fA-F]{32}$/;
@@ -179,7 +180,10 @@ export async function stage(ports: Ports, req: StageRequest): Promise<StageRespo
     try {
       pinnedCid = (await ports.pin.pin(verified.bytes)).cid;
     } catch (error) {
-      throw new GatewayError('PIN_FAILED', (error as Error).message);
+      // The upstream message can carry the full request URL (userinfo, query
+      // token). Respond with fixed text; keep only the redacted form in logs.
+      console.error('pin failed:', redactText(errorMessage(error)));
+      throw new GatewayError('PIN_FAILED', 'Pin request failed');
     }
     try {
       await ports.docStore.recordPin({
@@ -297,7 +301,8 @@ export async function confirm(ports: Ports, req: ConfirmRequest): Promise<Confir
     // An RPC outage is not an internal bug. A 429 from the public endpoint is
     // the most common cause, and reporting INTERNAL sends an operator looking
     // for a defect instead of backing off (found on the deployed Worker).
-    throw new GatewayError('RPC_UNAVAILABLE', (error as Error).message);
+    console.error('rpc unavailable:', redactText(errorMessage(error)));
+    throw new GatewayError('RPC_UNAVAILABLE', 'RPC unavailable');
   }
   if (receipt === null) {
     return { status: 'pending', retryAfter: 12 };
@@ -396,14 +401,15 @@ export async function content(ports: Ports, cid: string): Promise<Uint8Array> {
       throw new GatewayError('CONTENT_TOO_LARGE', `upstream content exceeds ${MAX_CONTENT_BYTES} bytes`);
     }
     // Three distinct facts, three distinct codes: absent vs malformed vs down.
+    console.error('content fetch failed:', redactText(errorMessage(error)));
     if (flags?.invalidCid === true) {
       // A CID the gateway cannot parse is malformed input, not a hash mismatch.
       // INVALID_HASH is defined for keccak disagreement (design §6).
-      throw new GatewayError('SCHEMA_VIOLATION', (error as Error).message);
+      throw new GatewayError('SCHEMA_VIOLATION', 'Upstream gateway rejected the CID');
     }
     throw new GatewayError(
       flags?.notFound === true ? 'CONTENT_NOT_FOUND' : 'GATEWAY_UPSTREAM',
-      (error as Error).message,
+      flags?.notFound === true ? 'Content not found upstream' : 'Upstream gateway failed',
     );
   }
 

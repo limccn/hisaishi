@@ -9,6 +9,7 @@
 import type { MemoryRow } from './contract.js';
 import { MAX_BODY_BYTES, MAX_CONTENT_BYTES } from './limits.js';
 import { GatewayError } from './errors.js';
+import { redactText, errorMessage } from './redact.js';
 import type { Ports } from './contract.js';
 import {
   build,
@@ -72,7 +73,9 @@ async function attempt<T>(fn: () => Promise<T>, successStatus = 200): Promise<Ga
             : { code: error.code, detail: error.detail },
       };
     }
-    return { ok: false, status: 500, error: { code: 'INTERNAL', detail: (error as Error).message } };
+    const message = errorMessage(error);
+    console.error('unhandled gateway error:', redactText(message));
+    return { ok: false, status: 500, error: { code: 'INTERNAL', detail: 'Internal error' } };
   }
 }
 
@@ -86,7 +89,7 @@ export function createGatewayHandle(ports: Ports, close: () => Promise<void> = a
     content: (cid) => attempt(() => content(ports, cid)),
     contentByDigest: (cidDigest) => attempt(() => contentByDigest(ports, cidDigest)),
     health: () => ({
-      version: '0.1.1',
+      version: '0.1.2',
       capabilities: true,
       deploymentId: ports.settings.deploymentId,
       sweep: true,

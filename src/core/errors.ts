@@ -6,6 +6,8 @@
  * snapshot test pins behaviour rather than each handler's memory of it.
  */
 
+import { redactText } from './redact.js';
+
 export type ErrorCode =
   | 'INVALID_HASH'
   | 'SCHEMA_VIOLATION'
@@ -56,10 +58,13 @@ export class GatewayError extends Error {
   readonly detail: string | undefined;
 
   constructor(code: ErrorCode, detail?: string) {
-    super(detail === undefined ? code : `${code}: ${detail}`);
+    // Defence in depth: call sites use fixed text for upstream failures, but a
+    // URL that slips into any other detail must not reach a response.
+    const safeDetail = detail === undefined ? undefined : redactText(detail);
+    super(safeDetail === undefined ? code : `${code}: ${safeDetail}`);
     this.name = 'GatewayError';
     this.code = code;
-    this.detail = detail;
+    this.detail = safeDetail;
   }
 
   get status(): number {

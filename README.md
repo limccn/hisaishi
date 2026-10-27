@@ -12,9 +12,10 @@ Signing belongs to [longstone](../longstone); hisaishi only prepares.
 npm install @limccn/hisaishi-gateway
 ```
 
-Published to npmjs and GitHub Packages as `0.1.1`. The root export is the
-keyless contract (`createGatewayHandle`, route types); `/local` is the Node +
-`node:sqlite` form; `/worker` is the Cloudflare Workers entry.
+Published to npmjs and GitHub Packages (latest published: `0.1.1`). This tree
+is the prepared `0.1.2` release. The root export is the keyless contract
+(`createGatewayHandle`, route types); `/local` is the Node + `node:sqlite` form;
+`/worker` is the Cloudflare Workers entry.
 
 ## Two forms, one contract
 
@@ -283,6 +284,15 @@ The shared contract suite runs three times: on an in-memory harness, on the real
 `node:sqlite` adapter, and on real D1 + KV from miniflare. Running both is what makes "the forms share a
 contract" a test rather than an assumption — and the second run is what caught
 the suite asserting against the harness's internal store instead of the adapter.
+
+## Security status (0.1.1 → 0.1.2)
+
+Upstream failures no longer echo their message. `PIN_FAILED`, `RPC_UNAVAILABLE`,
+the upstream `SCHEMA_VIOLATION` / `CONTENT_NOT_FOUND` / `GATEWAY_UPSTREAM`
+branches, and unclassified `INTERNAL` failures return fixed details; the
+internal text is logged only after URL redaction (userinfo, path, query, and
+fragment removed). In 0.1.1 a failed RPC or Pinata call could put a full URL —
+including credentials — into the response `detail`.
 
 ## Security status (0.1.0 → 0.1.1)
 
