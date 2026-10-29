@@ -13,6 +13,12 @@
   "compatibility_date": "2026-08-04",
   "compatibility_flags": ["nodejs_compat"],
 
+  // Keep the workers.dev hostname reachable as the documented fallback. Once
+  // `routes` declares a custom domain, Wrangler disables workers.dev unless
+  // this is set explicitly; released clients and the pages.dev build still
+  // target it until the VITE_HISAISHI_URL variable moves to api.longstone.app.
+  "workers_dev": true,
+
   "d1_databases": [
     {
       // Bound as `DB` because that is the name the Worker reads (`env.DB`).
