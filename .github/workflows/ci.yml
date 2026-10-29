@@ -26,6 +26,12 @@ jobs:
           repository: limccn/menhir
           token: ${{ secrets.MENHIR_REPO_TOKEN || github.token }}
           path: workspace/menhir
+      - name: Checkout longstone lockfile ledger
+        uses: actions/checkout@v4
+        with:
+          repository: limccn/longstone
+          token: ${{ github.token }}
+          path: ci
 
       - name: Assemble workspace
         working-directory: workspace
@@ -42,10 +48,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      # L-6 exception: assembled workspace cannot use a frozen lockfile.
-      # See https://github.com/limccn/longstone/blob/main/docs/supply-chain.md
-      - run: pnpm install --no-frozen-lockfile
+      # The lockfile is the reviewed ledger in longstone/ci/lockfiles. A
+      # missing or stale ledger fails the job; there is no non-frozen fallback.
+      - name: Install from reviewed lockfile
         working-directory: workspace
+        run: |
+          cp ../ci/ci/lockfiles/hisaishi-ci.yaml pnpm-lock.yaml
+          pnpm install --frozen-lockfile
 
       - run: pnpm --filter @limccn/menhir-core build
         working-directory: workspace
