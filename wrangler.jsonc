@@ -42,6 +42,20 @@
   // gateway URL belongs in a secret because it changes per deployment. RPC_URL
   // and PINATA_JWT are secrets for the same reason.
 
+  // The gateway's public hostname. `custom_domain` needs the `longstone.app`
+  // zone in the SAME Cloudflare account as this Worker; the binding takes
+  // effect on the owner's next `wrangler deploy`. Keeping it in the repo (even
+  // when the owner binds through the dashboard) stops the deployed route list
+  // from drifting away from the committed config. Rollback: remove this entry
+  // (or unbind the custom domain) and the Worker stays reachable on
+  // hisaishi.<subdomain>.workers.dev.
+  "routes": [
+    {
+      "pattern": "api.longstone.app",
+      "custom_domain": true
+    }
+  ],
+
   "vars": {
     // Required. Stable per logical deployment and part of the capability hash:
     // two deployments sharing this D1 database MUST use different ids, or they
@@ -49,9 +63,17 @@
     // rows until they are re-staged.
     "HISAISHI_DEPLOYMENT_ID": "hisaishi-prod-1",
     // Browser origins allowed to read/write. Loopback is always allowed; a
-    // write with a present, non-listed Origin gets 403. Set the deployed UI
-    // origin here (and keep it in sync with the Pages project).
-    "HISAISHI_ALLOWED_ORIGINS": "https://longstone-ui.pages.dev"
+    // write with a present, non-listed Origin gets 403.
+    //
+    // Two origins during the domain migration window:
+    //   https://longstone.app            — the branded app (canonical target)
+    //   https://longstone-ui.pages.dev   — still required while released
+    //     clients point here. longstone-ext 0.2.0 and longstone-vscode 0.2.3
+    //     hardcode the pages.dev origin and already-installed copies cannot be
+    //     hot-updated, so dropping it would break their staging/build calls.
+    //     Remove only after those constants ship in a release AND the old
+    //     versions are no longer in use. Keep in sync with the Pages project.
+    "HISAISHI_ALLOWED_ORIGINS": "https://longstone.app,https://longstone-ui.pages.dev"
     // Wildcard is deliberately absent; enable it only for local development
     // with "HISAISHI_ALLOW_ANY_ORIGIN": "true".
   },

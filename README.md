@@ -6,6 +6,10 @@ confirmation — and **never holds a wallet key**.
 
 Signing belongs to [longstone](../longstone); hisaishi only prepares.
 
+Deployed gateway: `https://api.longstone.app` (health:
+`https://api.longstone.app/v1/health`). The workers.dev hostname stays as a
+fallback if the custom domain is unbound.
+
 ## Install
 
 ```bash
@@ -82,6 +86,18 @@ Loopback origins are always allowed. A deployed UI must be listed in
 `HISAISHI_ALLOWED_ORIGINS`; a write with a present, disallowed `Origin` gets
 403. Wildcard CORS requires the explicit `HISAISHI_ALLOW_ANY_ORIGIN=true` and is
 unsafe outside local development. The `DEV_MODE` flag does not imply it.
+
+`HISAISHI_ALLOWED_ORIGINS` is a comma-separated list, and the deployed value
+holds **two** origins during the domain migration:
+
+| Origin | Why it is listed |
+|---|---|
+| `https://longstone.app` | Branded app (canonical target; `www` is 301'd here before a request is made, so it never appears as an Origin) |
+| `https://longstone-ui.pages.dev` | Kept for already-shipped clients: `longstone-ext` and `longstone-vscode` hardcode this origin and old installs cannot be hot-updated. Dropping it breaks their staging/build calls |
+
+Removing the pages.dev entry is a breaking change for every client built before
+the branded origin shipped; do it only once those versions are no longer in use.
+Both origins must also stay in sync with the Pages project serving the UI.
 
 Error codes and their HTTP status live in one table (`src/core/errors.ts`) so a
 snapshot test pins the mapping rather than each handler's memory of it.
@@ -185,12 +201,22 @@ npx wrangler secret put PINATA_JWT       # optional; omit for the offline adapte
 
 # 4b. Required plain vars live in wrangler.jsonc: HISAISHI_DEPLOYMENT_ID and
 #     HISAISHI_ALLOWED_ORIGINS. The deployment id must be unique per logical
-#     deployment sharing this database; the origin list is the deployed UI.
+#     deployment sharing this database; the origin list holds the branded app
+#     origin and, while released clients still point at it,
+#     https://longstone-ui.pages.dev (see "Browser origins").
 
-# 5. Deploy
+# 5. Deploy — also applies the committed api.longstone.app route (custom domain)
 pnpm build
 npx wrangler deploy
 ```
+
+`wrangler.jsonc` declares the Worker's public route, `api.longstone.app`, as a
+`custom_domain`. That requires the `longstone.app` zone to be in the same
+Cloudflare account as this Worker and takes effect on the owner's deploy; until
+it is bound, the workers.dev hostname remains the endpoint. Before exposing the
+gateway on a public hostname, configure Cloudflare edge rate limiting and WAF
+for `/v1/memories`, `/v1/batches/*` and `/v1/content` (NV-2) — the app-level
+limiter is per isolate and is a cost guard, not a quota.
 
 `IPFS_GATEWAY` is required for `/v1/content`. Give it a **dedicated** gateway
 (e.g. `https://<name>.mypinata.cloud`); the code appends `/ipfs/<cid>`, which is
@@ -212,7 +238,9 @@ emitted by that contract. Any contract can emit the same signature.
 The smoke is a script, so it is reproducible:
 
 ```powershell
-$env:BASE_URL = "https://<worker>.<subdomain>.workers.dev"
+$env:BASE_URL = "https://api.longstone.app"   # public endpoint
+# fallback when the custom domain is unbound:
+#   $env:BASE_URL = "https://<worker>.<subdomain>.workers.dev"
 node scripts/e2e-worker.mjs
 ```
 
@@ -223,7 +251,7 @@ non-zero on the first mismatch. It needs no credentials and spends no gas.
 The equivalent hand-run commands:
 
 ```powershell
-$BASE = "https://<worker>.<subdomain>.workers.dev"
+$BASE = "https://api.longstone.app"   # workers.dev fallback: https://<worker>.<subdomain>.workers.dev
 $OWNER = "0x" + ("11" * 20)
 $CAP = "ab" * 16
 

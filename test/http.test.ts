@@ -15,11 +15,14 @@ import { createMemoryHarness } from '../src/core/ports/memory.js';
 import { createApp } from '../src/local/serve.js';
 import { contentFor, OWNER, TX_HASH } from './contract-suite.js';
 
-function makeApp() {
+const PAGES_ORIGIN = 'https://longstone-ui.pages.dev';
+const BRANDED_ORIGIN = 'https://longstone.app';
+
+function makeApp(allowedOrigins: readonly string[] = [PAGES_ORIGIN]) {
   const harness = createMemoryHarness();
   return {
     app: createApp(createGatewayHandle(harness.ports), {
-      allowedOrigins: ['https://longstone-ui.pages.dev'],
+      allowedOrigins,
     }),
     harness,
   };
@@ -303,9 +306,10 @@ describe('pin failure and D1 chunking', () => {
 });
 
 describe('browser reachability (CORS)', () => {
-  // The UI is served from Pages/Vercel and calls this Worker on workers.dev.
-  // Regression: without the middleware, every staging fetch fails at the
-  // browser's preflight even though curl and same-origin tests pass.
+  // The UI is served from Pages/the branded apex and calls this Worker on
+  // api.longstone.app (workers.dev as fallback). Regression: without the
+  // middleware, every staging fetch fails at the browser's preflight even
+  // though curl and same-origin tests pass.
   it('answers the preflight with the methods the UI uses', async () => {
     const { app } = makeApp();
     const response = await app.request('/v1/memories?owner=0x0', {
@@ -328,6 +332,59 @@ describe('browser reachability (CORS)', () => {
     });
     expect(response.status).toBe(200);
     expect(response.headers.get('access-control-allow-origin')).toBe('https://longstone-ui.pages.dev');
+  });
+
+  it('allows both origins when the migration list contains the apex and pages.dev', async () => {
+    // The deployed config lists both: the branded apex is the new canonical
+    // origin, pages.dev stays for released clients that hardcode it.
+    const { app } = makeApp([BRANDED_ORIGIN, PAGES_ORIGIN]);
+
+    for (const origin of [BRANDED_ORIGIN, PAGES_ORIGIN]) {
+      const preflight = await app.request('/v1/memories', {
+        method: 'OPTIONS',
+        headers: { origin, 'access-control-request-method': 'POST' },
+      });
+      expect(preflight.status).toBe(204);
+      expect(preflight.headers.get('access-control-allow-origin')).toBe(origin);
+    }
+
+    const c = contentFor('dual-origin-stage');
+    const write = await app.request('/v1/memories', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: BRANDED_ORIGIN },
+      body: JSON.stringify({
+        owner: OWNER,
+        content: c.content,
+        contentHash: c.contentHash,
+        tags: [],
+        capability: CAPABILITY,
+      }),
+    });
+    expect(write.status).toBe(200);
+    expect(write.headers.get('access-control-allow-origin')).toBe(BRANDED_ORIGIN);
+  });
+
+  it('still rejects an unlisted origin while both origins are configured', async () => {
+    const { app } = makeApp([BRANDED_ORIGIN, PAGES_ORIGIN]);
+    const c = contentFor('dual-origin-denied');
+    const response = await app.request('/v1/memories', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        origin: 'https://evil.example',
+      },
+      body: JSON.stringify({
+        owner: OWNER,
+        content: c.content,
+        contentHash: c.contentHash,
+        tags: [],
+        capability: CAPABILITY,
+      }),
+    });
+    expect(response.status).toBe(403);
+    expect((await response.json()) as { code: string }).toMatchObject({
+      code: 'ORIGIN_NOT_ALLOWED',
+    });
   });
 });
 
